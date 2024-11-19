@@ -177,9 +177,8 @@ for (let i = columns.length - 1; i > 0; i--) {
     let minDistance = Infinity;
 
     for (let sourceEl of previousColumn) {
-      const dx = (sourceEl.x + sourceEl.width / 2) - (targetEl.x + targetEl.width / 2);
-      const dy = (sourceEl.y + sourceEl.height / 2) - (targetEl.y + targetEl.height / 2);
-      const distance = Math.sqrt(dx * dx + dy * dy);
+      const distance = Math.abs(sourceEl.y - targetEl.y);
+      // console.log("distance", targetEl.text, sourceEl.text, distance);
 
       if (distance < minDistance) {
         minDistance = distance;
