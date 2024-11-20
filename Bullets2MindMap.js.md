@@ -22,35 +22,62 @@ const bulletedText = textElement.text;
 // ea.deleteViewElements([textElement.id]);
 
 settings = ea.getScriptSettings();
-// Set default values on first run
-if (!settings["Starting arrowhead"]) {
-  settings = {
-    "Starting arrowhead": {
-      value: "none",
-      valueset: ["none", "arrow", "triangle", "bar", "dot"]
-    },
-    "Ending arrowhead": {
-      value: "arrow",
-      valueset: ["none", "arrow", "triangle", "bar", "dot"]
-    },
-    "Line points": {
-      value: 0,
-      description: "Number of line points between start and end"
-    }
-  };
-  ea.setScriptSettings(settings);
+
+// Check if settings is null and initialize if necessary
+if (!settings) {
+  settings = {};
 }
+
+// Set default values if missing
+if (!settings["Starting arrowhead"]) {
+  settings["Starting arrowhead"] = {
+    value: "none",
+    valueset: ["none", "arrow", "triangle", "bar", "dot"]
+  };
+}
+
+if (!settings["Ending arrowhead"]) {
+  settings["Ending arrowhead"] = {
+    value: "arrow",
+    valueset: ["none", "arrow", "triangle", "bar", "dot"]
+  };
+}
+
+if (!settings["Line points"]) {
+  settings["Line points"] = {
+    value: 0,
+    description: "Number of line points between start and end"
+  };
+}
+
+if (!settings["Horizontal spacing"]) {
+  settings["Horizontal spacing"] = {
+    value: 200,
+    description: "Horizontal distance between levels (from parent's right to child's left)"
+  };
+}
+
+if (!settings["Vertical spacing"]) {
+  settings["Vertical spacing"] = {
+    value: 100,
+    description: "Vertical spacing between sibling nodes"
+  };
+}
+
+ea.setScriptSettings(settings);
 
 const arrowStart = settings["Starting arrowhead"].value === "none" ? null : settings["Starting arrowhead"].value;
 const arrowEnd = settings["Ending arrowhead"].value === "none" ? null : settings["Ending arrowhead"].value;
 const linePoints = Math.floor(settings["Line points"].value);
+
+const xSpacing = parseFloat(settings["Horizontal spacing"].value); // Horizontal distance between levels
+const ySpacing = parseFloat(settings["Vertical spacing"].value);   // Vertical spacing between sibling nodes
 
 // Parse the bulleted text
 const lines = bulletedText.split('\n');
 const nodes = [];
 const parents = [];
 const spacesPerIndent = 2; // Adjust based on your indentation
-const rootLevelIndent = null;
 
 for (const line of lines) {
   const match = line.match(/^(\s*)[-*+]\s+(.*)$/);
@@ -66,6 +93,7 @@ for (const line of lines) {
       text: text,
       level: level,
       parent: null,
+      children: [],
       element: null,
       x: 0,
       y: 0
@@ -73,13 +101,14 @@ for (const line of lines) {
 
     if (level > 0 && parents[level - 1]) {
       node.parent = parents[level - 1];
+      // Add this node to its parent's children
+      parents[level - 1].children.push(node);
     }
 
     nodes.push(node);
     parents[level] = node;
     // Remove deeper levels
     parents.length = level + 1;
-    console.log("find text", text);
   } else if (line.trim() === '') {
     // Ignore empty lines
     continue;
@@ -89,12 +118,40 @@ for (const line of lines) {
   }
 }
 
-// Set positioning constants
-const xOffsetPerLevel = 200; // Horizontal distance per level
-const ySpacing = 100;        // Vertical spacing between elements
+// Identify root nodes
+const rootNodes = nodes.filter(node => !node.parent);
 
-// Keep track of the next y position for each level
-const levelPositions = [];
+// Initialize nextY for vertical positioning
+let nextY = 0;
+
+// Function to assign positions
+function assignPositions(node, level, x) {
+  node.x = x;
+
+  if (!node.children || node.children.length === 0) {
+    // Leaf node
+    node.y = nextY;
+    nextY += ySpacing;
+  } else {
+    // Internal node
+    // Process children first
+    for (let child of node.children) {
+      assignPositions(child, level + 1, x - xSpacing);
+    }
+    // After processing children, set y position as average of children's y positions
+    const firstChildY = node.children[0].y;
+    const lastChildY = node.children[node.children.length - 1].y;
+    node.y = (firstChildY + lastChildY) / 2;
+  }
+}
+
+// Starting x position for root nodes (rightmost position)
+const rootX = 0;
+
+// Assign positions to all root nodes
+for (const root of rootNodes) {
+  assignPositions(root, 0, rootX);
+}
 
 // Apply style from the first node
 ea.style.strokeColor = "#000000"; // Default to black
@@ -112,6 +169,18 @@ const arrowOptions = {
   strokeStyle: ea.style.strokeStyle,
   roughness: 0, // Adjust as needed
 };
+
+// Now create elements
+for (const node of nodes) {
+  const x = node.x;
+  const y = node.y;
+
+  // Create the text element
+  const elementId = ea.addText(x, y, node.text);
+  const element = ea.getElement(elementId);
+
+  node.element = element;
+}
 
 // Function to get the point on the edge of an element closest to a given point
 function getEdgePoint(element, targetX, targetY) {
@@ -157,34 +226,11 @@ function getEdgePoint(element, targetX, targetY) {
   return [edgeX, edgeY];
 }
 
-// Create elements and position them
-for (const node of nodes) {
-  const level = node.level;
-  const x = level * xOffsetPerLevel;
-  let y = levelPositions[level] || 0;
-
-  if (node.parent) {
-    const parentY = node.parent.y;
-    y = Math.max(y, parentY + ySpacing);
-  }
-
-  // Create the text element
-  const elementId = ea.addText(x, y, node.text);
-  const element = ea.getElement(elementId);
-
-  node.element = element;
-  node.x = x;
-  node.y = y;
-
-  // Update the y position for the level
-  levelPositions[level] = y + ySpacing;
-}
-
 // Connect elements with arrows
 for (const node of nodes) {
   if (node.parent) {
-    const sourceEl = node.parent.element;
-    const targetEl = node.element;
+    const sourceEl = node.parent.element; // Parent element
+    const targetEl = node.element;        // Child element
 
     const sourceCenterX = sourceEl.x + sourceEl.width / 2;
     const sourceCenterY = sourceEl.y + sourceEl.height / 2;
