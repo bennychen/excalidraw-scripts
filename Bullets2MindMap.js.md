@@ -136,7 +136,7 @@ function assignPositions(node, level, x) {
     // Internal node
     // Process children first
     for (let child of node.children) {
-      assignPositions(child, level + 1, x - xSpacing);
+      assignPositions(child, level + 1, x + xSpacing);
     }
     // After processing children, set y position as average of children's y positions
     const firstChildY = node.children[0].y;
@@ -145,7 +145,7 @@ function assignPositions(node, level, x) {
   }
 }
 
-// Starting x position for root nodes (rightmost position)
+// Starting x position for root nodes (leftmost position)
 const rootX = 0;
 
 // Assign positions to all root nodes
