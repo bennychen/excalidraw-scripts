@@ -11,7 +11,7 @@ settings = ea.getScriptSettings();
 if (!settings["Starting arrowhead"]) {
   settings = {
     "Starting arrowhead": {
-      value: "arrow",
+      value: "none",
       valueset: ["none", "arrow", "triangle", "bar", "dot"]
     },
     "Ending arrowhead": {
@@ -23,7 +23,7 @@ if (!settings["Starting arrowhead"]) {
       description: "Number of line points between start and end"
     },
     "Threshold": {
-      value: 100,
+      value: 50,
       description: "Distance threshold for grouping elements into columns"
     }
   };

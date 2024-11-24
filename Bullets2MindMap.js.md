@@ -38,7 +38,7 @@ if (!settings["Starting arrowhead"]) {
 
 if (!settings["Ending arrowhead"]) {
   settings["Ending arrowhead"] = {
-    value: "arrow",
+    value: "none",
     valueset: ["none", "arrow", "triangle", "bar", "dot"]
   };
 }
