@@ -15,16 +15,12 @@ if (!settings["Starting arrowhead"]) {
       valueset: ["none", "arrow", "triangle", "bar", "dot"]
     },
     "Ending arrowhead": {
-      value: "none",
+      value: "arrow",
       valueset: ["none", "arrow", "triangle", "bar", "dot"]
     },
     "Line points": {
       value: 0,
       description: "Number of line points between start and end"
-    },
-    "Threshold": {
-      value: 50,
-      description: "Distance threshold for grouping elements into columns"
     }
   };
   ea.setScriptSettings(settings);
@@ -33,7 +29,6 @@ if (!settings["Starting arrowhead"]) {
 const arrowStart = settings["Starting arrowhead"].value === "none" ? null : settings["Starting arrowhead"].value;
 const arrowEnd = settings["Ending arrowhead"].value === "none" ? null : settings["Ending arrowhead"].value;
 const linePoints = Math.floor(settings["Line points"].value);
-const threshold = parseFloat(settings["Threshold"].value);
 
 // Get selected elements, excluding arrows and lines
 let selectedElements = ea.getViewSelectedElements().filter(el => el.type !== 'arrow' && el.type !== 'line');
@@ -47,28 +42,11 @@ if (selectedElements.length === 0) {
 // Copy selected elements to EA for editing
 ea.copyViewElementsToEAforEditing(selectedElements);
 
-// Get groups from selected elements
-const groups = ea.getMaximumGroups(selectedElements);
-
-let els = []; // Store largest elements from groups
-
-// Extract the largest element from each group
-for (let i = 0, len = groups.length; i < len; i++) {
-  const largestElement = ea.getLargestElement(groups[i]);
-  els.push(largestElement);
-}
-
-// Check if there are valid elements to connect
-if (els.length === 0) {
-  new Notice("No valid objects found to connect.");
-  return;
-}
-
 // Apply line style from the first element
-ea.style.strokeColor = els[0].strokeColor;
-ea.style.strokeWidth = els[0].strokeWidth;
-ea.style.strokeStyle = els[0].strokeStyle;
-ea.style.strokeSharpness = els[0].strokeSharpness;
+ea.style.strokeColor = selectedElements[0].strokeColor;
+ea.style.strokeWidth = selectedElements[0].strokeWidth;
+ea.style.strokeStyle = selectedElements[0].strokeStyle;
+ea.style.strokeSharpness = selectedElements[0].strokeSharpness;
 
 // Set arrow options based on settings
 const arrowOptions = {
@@ -81,33 +59,76 @@ const arrowOptions = {
   roughness: 0, // Adjust as needed
 };
 
-// Group elements into columns based on their x positions
-function groupElementsByColumn(elements, threshold) {
-  // Sort elements by x position
-  elements.sort((a, b) => a.x - b.x);
-
-  let columns = [];
-  let currentColumn = [];
-  let lastX = null;
-
-  for (let el of elements) {
-    if (lastX === null || Math.abs(el.x - lastX) <= threshold) {
-      currentColumn.push(el);
-    } else {
-      columns.push(currentColumn);
-      currentColumn = [el];
-    }
-    lastX = el.x;
+// Class to represent a node in the tree
+class Node {
+  constructor(element) {
+    this.element = element;
+    this.parent = null;
+    this.children = [];
   }
-  if (currentColumn.length > 0) {
-    columns.push(currentColumn);
-  }
-  return columns;
 }
 
-const columns = groupElementsByColumn(els, threshold);
+// Create nodes from all selected elements
+let nodes = selectedElements.map(el => new Node(el));
 
-// Function to get the point on the edge of an element closest to a given point
+// Sort nodes by their leftmost x position
+nodes.sort((a, b) => a.element.x - b.element.x);
+
+// Identify the root node (leftmost node)
+const rootNode = nodes[0];
+
+// Build the tree by assigning parents
+for (let i = 1; i < nodes.length; i++) {
+  const node = nodes[i];
+  const el = node.element;
+  const elLeftX = el.x;
+  const elRightX = el.x + el.width;
+
+  // Find potential parents among nodes to the left with no x-overlap
+  let potentialParents = [];
+  for (let j = 0; j < i; j++) {
+    const potentialParentNode = nodes[j];
+    const parentEl = potentialParentNode.element;
+    const parentRightX = parentEl.x + parentEl.width;
+
+    // Check if parent's rightmost x is less than child's leftmost x (no x-overlap)
+    if (parentRightX < elLeftX) {
+      potentialParents.push(potentialParentNode);
+    }
+  }
+
+  // If there are potential parents, select the one with the closest rightmost x to the child's leftmost x
+  if (potentialParents.length > 0) {
+    let closestParent = null;
+    let minXGap = Infinity;
+
+    for (let potentialParent of potentialParents) {
+      const parentEl = potentialParent.element;
+      const parentRightX = parentEl.x + parentEl.width;
+      const xGap = elLeftX - parentRightX;
+
+      if (xGap < minXGap) {
+        minXGap = xGap;
+        closestParent = potentialParent;
+      }
+    }
+
+    // Assign parent and add child to parent's children
+    if (closestParent) {
+      node.parent = closestParent;
+      closestParent.children.push(node);
+    }
+  } else {
+    // If no potential parents, assign root node as parent (to ensure a single tree)
+    if (node !== rootNode) {
+      node.parent = rootNode;
+      rootNode.children.push(node);
+    }
+  }
+  // console.log(el.text, 'parent:', node.parent.element.text);
+}
+
+// Function to get the point on the edge of an element closest to a given point (updated)
 function getEdgePoint(element, targetX, targetY) {
   const x = element.x;
   const y = element.y;
@@ -166,53 +187,42 @@ function areElementsConnected(sourceId, targetId) {
   return false;
 }
 
-// Now connect each element in current column to the closest element in previous column
-for (let i = columns.length - 1; i > 0; i--) {
-  const currentColumn = columns[i];
-  const previousColumn = columns[i - 1];
+// Function to create arrows recursively
+function createArrows(node) {
+  for (let child of node.children) {
+    const sourceEl = node.element; // Parent element
+    const targetEl = child.element; // Child element
 
-  for (let targetEl of currentColumn) {
-    // Find the closest element in previousColumn to targetEl
-    let closestSourceEl = null;
-    let minDistance = Infinity;
+    // Calculate centers
+    const sourceCenterX = sourceEl.x + sourceEl.width / 2;
+    const sourceCenterY = sourceEl.y + sourceEl.height / 2;
 
-    for (let sourceEl of previousColumn) {
-      const distance = Math.abs(sourceEl.y - targetEl.y);
-      // console.log("distance", targetEl.text, sourceEl.text, distance);
+    const targetCenterX = targetEl.x + targetEl.width / 2;
+    const targetCenterY = targetEl.y + targetEl.height / 2;
 
-      if (distance < minDistance) {
-        minDistance = distance;
-        closestSourceEl = sourceEl;
-      }
+    // Get edge points
+    const [startX, startY] = getEdgePoint(sourceEl, targetCenterX, targetCenterY);
+    const [endX, endY] = getEdgePoint(targetEl, sourceCenterX, sourceCenterY);
+
+    // Check if the elements are already connected
+    if (!areElementsConnected(sourceEl.id, targetEl.id)) {
+      // Create the arrow with startObjectId and endObjectId
+      ea.addArrow([[startX, startY], [endX, endY]], {
+        ...arrowOptions,
+        startObjectId: sourceEl.id,
+        endObjectId: targetEl.id,
+      });
     }
 
-    if (closestSourceEl) {
-      // Check if the elements are already connected
-      if (areElementsConnected(targetEl.id, closestSourceEl.id)) {
-        // Elements are already connected; skip adding a new arrow
-        continue;
-      }
-
-      // Calculate centers
-      const targetCenterX = targetEl.x + targetEl.width / 2;
-      const targetCenterY = targetEl.y + targetEl.height / 2;
-
-      const sourceCenterX = closestSourceEl.x + closestSourceEl.width / 2;
-      const sourceCenterY = closestSourceEl.y + closestSourceEl.height / 2;
-
-      // Get edge points
-      const [startX, startY] = getEdgePoint(targetEl, sourceCenterX, sourceCenterY);
-      const [endX, endY] = getEdgePoint(closestSourceEl, targetCenterX, targetCenterY);
-
-      // Create the arrow with startObjectId and endObjectId
-      const arrowId = ea.addArrow([[startX, startY], [endX, endY]], {
-        ...arrowOptions,
-        startObjectId: targetEl.id,
-        endObjectId: closestSourceEl.id,
-      });
+    // Recursively create arrows for the child's children
+    if (child.children.length > 0) {
+      createArrows(child);
     }
   }
 }
+
+// Start creating arrows from the root node
+createArrows(rootNode);
 
 // Finalize by adding elements to view
 await ea.addElementsToView(false, false, true);
