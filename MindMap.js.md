@@ -7,37 +7,154 @@ if (!ea.verifyMinimumPluginVersion || !ea.verifyMinimumPluginVersion("1.5.21")) 
 }
 
 settings = ea.getScriptSettings();
-// Set default values on first run
-if (!settings["Starting arrowhead"]) {
-  settings = {
-    "Starting arrowhead": {
-      value: "none",
-      valueset: ["none", "arrow", "triangle", "bar", "dot"]
-    },
-    "Ending arrowhead": {
-      value: "arrow",
-      valueset: ["none", "arrow", "triangle", "bar", "dot"]
-    },
-    "Line points": {
-      value: 0,
-      description: "Number of line points between start and end"
-    }
-  };
-  ea.setScriptSettings(settings);
+
+// Define default settings
+const defaultSettings = {
+  "Starting arrowhead": {
+    value: "none",
+    valueset: ["none", "arrow", "triangle", "bar", "dot"]
+  },
+  "Ending arrowhead": {
+    value: "none",
+    valueset: ["none", "arrow", "triangle", "bar", "dot"]
+  },
+  "Line points": {
+    value: 0,
+    description: "Number of line points between start and end"
+  },
+  "Box selected": {
+    value: false,
+    description: "Box selected mindmap elements"
+  }
+};
+
+// Clear old unused settings
+for (const key in settings) {
+  if (!defaultSettings.hasOwnProperty(key)) {
+    delete settings[key];
+  }
 }
+
+// Check and set default values for each setting if not present
+for (const key in defaultSettings) {
+  if (!settings[key]) {
+    settings[key] = defaultSettings[key];
+  }
+}
+
+ea.setScriptSettings(settings);
+
+// Get selected elements
+let selectedElements = ea.getViewSelectedElements();
+
+// Check if any elements are selected
+if (selectedElements.length === 0) {
+  new Notice("No objects selected. Please select at least one object to connect or select.");
+  return;
+}
+
+// If only one text element is selected, perform grouping action
+if (selectedElements.length === 1 && selectedElements[0].type !== 'line') {
+  const rootElement = selectedElements[0];
+
+  // Function to recursively find all child elements
+  function getChildElements(element, allElements, visited) {
+    visited = visited || new Set();
+    let children = [];
+
+    // Prevent cycles
+    if (visited.has(element.id)) {
+      return children;
+    }
+    visited.add(element.id);
+
+    // Get all arrows starting from this element
+    const outgoingArrows = allElements.filter(el => {
+      if (el.type === 'arrow' && el.startBinding && el.startBinding.elementId === element.id) {
+        // Get the end element
+        const endElement = allElements.find(e => e.id === el.endBinding?.elementId);
+        if (endElement && endElement.x > element.x) {
+          // The child element is on the right side
+          return true;
+        }
+      }
+      return false;
+    });
+
+    for (let arrow of outgoingArrows) {
+      const childElementId = arrow.endBinding.elementId;
+      const childElement = allElements.find(e => e.id === childElementId);
+
+      if (childElement) {
+        children.push(childElement);
+        children.push(arrow); // Include the arrow in the group
+
+        // Recursively get children of this child
+        const grandChildren = getChildElements(childElement, allElements, visited);
+        children = children.concat(grandChildren);
+      }
+    }
+
+    return children;
+  }
+
+  // Get all elements in the canvas
+  const allElements = ea.getViewElements();
+
+  // Get all child elements recursively
+  const childElements = getChildElements(rootElement, allElements);
+
+  if (childElements.length > 0) {
+    // Include the root element in the group
+    const elementsToGroup = [rootElement].concat(childElements);
+
+    // Group the elements
+    const elementIdsToGroup = elementsToGroup.map(el => el.id);
+    const addBox = settings["Box selected"].value;
+    if (addBox) {
+      const box = ea.getBoundingBox(elementsToGroup);
+      const padding = 5;
+      color = ea
+              .getExcalidrawAPI()
+              .getAppState()
+              .currentItemStrokeColor;
+      ea.style.strokeColor = color;
+      ea.style.roundness = { type: 2, value: padding };
+      id = ea.addRect(
+        box.topX - padding,
+        box.topY - padding,
+        box.width + 2*padding,
+        box.height + 2*padding
+      );
+      ea.copyViewElementsToEAforEditing(elementsToGroup);
+      ea.addToGroup([id].concat(elementIdsToGroup));
+    }
+    else {
+      ea.copyViewElementsToEAforEditing(elementsToGroup);
+      ea.addToGroup(elementIdsToGroup);
+    }
+
+
+    // Add elements to view
+    await ea.addElementsToView(false, false, true);
+
+    new Notice(`Grouped ${elementsToGroup.length} elements.`);
+  } else {
+    new Notice("No child elements found for the selected element.");
+  }
+
+  // End the script here since we've performed the grouping action
+  return;
+}
+
+// If more than one element is selected, perform the connection action
 
 const arrowStart = settings["Starting arrowhead"].value === "none" ? null : settings["Starting arrowhead"].value;
 const arrowEnd = settings["Ending arrowhead"].value === "none" ? null : settings["Ending arrowhead"].value;
 const linePoints = Math.floor(settings["Line points"].value);
 
 // Get selected elements, excluding arrows and lines
-let selectedElements = ea.getViewSelectedElements().filter(el => el.type !== 'arrow' && el.type !== 'line');
-
-// Check if any elements are selected
-if (selectedElements.length === 0) {
-  new Notice("No objects selected. Please select at least one object to connect.");
-  return;
-}
+selectedElements = selectedElements.filter(el => el.type !== 'arrow' && el.type !== 'line');
 
 // Copy selected elements to EA for editing
 ea.copyViewElementsToEAforEditing(selectedElements);
@@ -101,7 +218,7 @@ for (let i = 1; i < nodes.length; i++) {
   // Filter to keep only column-adjacent nodes
   const columnAdjacentNodes = potentialParents.filter(parentNode => {
     const parentRightX = parentNode.element.x + parentNode.element.width;
-    
+
     // Check if any other node is between this parent and current node
     return !potentialParents.some(otherNode => {
       if (otherNode === parentNode) return false;
@@ -118,8 +235,8 @@ for (let i = 1; i < nodes.length; i++) {
 
     for (let potentialParent of columnAdjacentNodes) {
       const parentEl = potentialParent.element;
-      const parentCenterY = parentEl.y + parentEl.height/2;
-      const elementCenterY = el.y + el.height/2;
+      const parentCenterY = parentEl.y + parentEl.height / 2;
+      const elementCenterY = el.y + el.height / 2;
       const yGap = Math.abs(elementCenterY - parentCenterY);
 
       if (yGap < minYGap) {
@@ -140,10 +257,9 @@ for (let i = 1; i < nodes.length; i++) {
       rootNode.children.push(node);
     }
   }
-  // console.log(el.text, 'parent:', node.parent.element.text);
 }
 
-// Function to get the point on the edge of an element closest to a given point (updated)
+// Function to get the point on the edge of an element closest to a given point
 function getEdgePoint(element, targetX, targetY) {
   const x = element.x;
   const y = element.y;
