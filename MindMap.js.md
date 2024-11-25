@@ -53,8 +53,9 @@ if (selectedElements.length === 0) {
   return;
 }
 
-// If only one text element is selected, perform grouping action
-if (selectedElements.length === 1 && selectedElements[0].type !== 'line') {
+// If only one element is selected, perform grouping action
+if (selectedElements.length === 1 && 
+    selectedElements[0].type !== 'line' && selectedElements[0].type != 'arrow') {
   const rootElement = selectedElements[0];
 
   // Function to recursively find all child elements
@@ -103,7 +104,6 @@ if (selectedElements.length === 1 && selectedElements[0].type !== 'line') {
 
   // Get all child elements recursively
   const childElements = getChildElements(rootElement, allElements);
-
   if (childElements.length > 0) {
     // Include the root element in the group
     const elementsToGroup = [rootElement].concat(childElements);
