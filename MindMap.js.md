@@ -83,32 +83,47 @@ for (let i = 1; i < nodes.length; i++) {
   const el = node.element;
   const elLeftX = el.x;
   const elRightX = el.x + el.width;
+  const elTopY = el.y;
+  const elBottomY = el.y + el.height;
 
-  // Find potential parents among nodes to the left with no x-overlap
+  // Find potential parents among nodes to the left
   let potentialParents = [];
   for (let j = 0; j < i; j++) {
     const potentialParentNode = nodes[j];
     const parentEl = potentialParentNode.element;
     const parentRightX = parentEl.x + parentEl.width;
 
-    // Check if parent's rightmost x is less than child's leftmost x (no x-overlap)
     if (parentRightX < elLeftX) {
       potentialParents.push(potentialParentNode);
     }
   }
 
-  // If there are potential parents, select the one with the closest rightmost x to the child's leftmost x
-  if (potentialParents.length > 0) {
+  // Filter to keep only column-adjacent nodes
+  const columnAdjacentNodes = potentialParents.filter(parentNode => {
+    const parentRightX = parentNode.element.x + parentNode.element.width;
+    
+    // Check if any other node is between this parent and current node
+    return !potentialParents.some(otherNode => {
+      if (otherNode === parentNode) return false;
+      const otherLeftX = otherNode.element.x;
+      const otherRightX = otherNode.element.x + otherNode.element.width;
+      return otherLeftX > parentRightX && otherRightX < elLeftX;
+    });
+  });
+
+  // Find the parent with minimum y-gap
+  if (columnAdjacentNodes.length > 0) {
     let closestParent = null;
-    let minXGap = Infinity;
+    let minYGap = Infinity;
 
-    for (let potentialParent of potentialParents) {
+    for (let potentialParent of columnAdjacentNodes) {
       const parentEl = potentialParent.element;
-      const parentRightX = parentEl.x + parentEl.width;
-      const xGap = elLeftX - parentRightX;
+      const parentCenterY = parentEl.y + parentEl.height/2;
+      const elementCenterY = el.y + el.height/2;
+      const yGap = Math.abs(elementCenterY - parentCenterY);
 
-      if (xGap < minXGap) {
-        minXGap = xGap;
+      if (yGap < minYGap) {
+        minYGap = yGap;
         closestParent = potentialParent;
       }
     }
@@ -119,7 +134,7 @@ for (let i = 1; i < nodes.length; i++) {
       closestParent.children.push(node);
     }
   } else {
-    // If no potential parents, assign root node as parent (to ensure a single tree)
+    // If no column-adjacent parents, assign root node as parent
     if (node !== rootNode) {
       node.parent = rootNode;
       rootNode.children.push(node);
