@@ -259,7 +259,14 @@ for (let i = 1; i < nodes.length; i++) {
   }
 }
 
-// Function to get the point on the edge of an element closest to a given point
+/**
+ * getEdgePoint(element, targetX, targetY)
+ * Always returns a point on the left or right boundary of `element`.
+ * If the target is to the right, you get the right edge (x + w).
+ * If the target is to the left, you get the left edge (x).
+ * We then compute a vertical offset using the slope from the shape’s center
+ * and clamp the result so it stays within the element’s top and bottom.
+ */
 function getEdgePoint(element, targetX, targetY) {
   const x = element.x;
   const y = element.y;
@@ -272,33 +279,33 @@ function getEdgePoint(element, targetX, targetY) {
   const dx = targetX - centerX;
   const dy = targetY - centerY;
 
-  const m = dy / dx;
+  // If dx is 0, we can't do a slope calculation (vertical line).
+  // Fallback to right edge if you prefer, or left if you prefer.
+  if (dx === 0) {
+    return [x + w, centerY];
+  }
+
+  // Slope from center to target
+  const slope = dy / dx;
 
   let edgeX, edgeY;
 
-  if (Math.abs(dx) > Math.abs(dy)) {
-    // Intersection with left or right edge
-    if (dx > 0) {
-      edgeX = x + w;
-      edgeY = centerY + (w / 2) * m;
-    } else {
-      edgeX = x;
-      edgeY = centerY - (w / 2) * m;
-    }
-  } else {
-    // Intersection with top or bottom edge
-    if (dy > 0) {
-      edgeY = y + h;
-      edgeX = centerX + (h / 2) / m;
-    } else {
-      edgeY = y;
-      edgeX = centerX - (h / 2) / m;
-    }
+  // If the target is to the right, use the right edge
+  if (dx > 0) {
+    edgeX = x + w;
+    // Horizontal distance from center to right edge is w/2
+    edgeY = centerY + slope * (w / 2);
+  } 
+  // Otherwise, use the left edge
+  else {
+    edgeX = x;
+    // Horizontal distance from center to left edge is w/2
+    edgeY = centerY - slope * (w / 2);
   }
 
-  // Clamp edgeX and edgeY to element boundaries
-  edgeX = Math.max(x, Math.min(x + w, edgeX));
-  edgeY = Math.max(y, Math.min(y + h, edgeY));
+  // Make sure we stay within the top and bottom edges of the shape
+  if (edgeY < y) edgeY = y;
+  if (edgeY > y + h) edgeY = y + h;
 
   return [edgeX, edgeY];
 }
