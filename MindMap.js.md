@@ -25,6 +25,10 @@ const defaultSettings = {
   "Box selected": {
     value: false,
     description: "Box selected mindmap elements"
+  },
+  "Add dash bullet": {
+    value: true,
+    description: "If true, prepend a dash '-' to each bullet line in the outline."
   }
 };
 
@@ -116,13 +120,21 @@ if (selectedElements.length === 1 &&
     }
     visited.add(element.id);
 
-    // We'll try to get the shape's "text" if it exists
-    // If your shapes store text differently, adjust accordingly.
+    // Figure out how we label each element
     let label = element.text?.trim() ?? `Element ${element.id}`;
+    // Remove all line breaks from the node text
+    label = label.replace(/\r?\n/g, " ");
 
-    // Prepare this node's bullet line
-    let indent = "  ".repeat(depth);
-    let outline = `${indent}- ${label}\n`;
+    // Adjust indentation
+    let indent = "\t".repeat(depth);
+
+    // The new setting read:
+    const useDash = settings["Add dash bullet"].value;
+    // If it's true, we'll prepend "- ", otherwise just an empty string or something else
+    let bulletPrefix = useDash ? "- " : "";
+
+    // Form this line
+    let outline = `${indent}${bulletPrefix}${label}\n`;
 
     // Find all arrow-based children to the right
     const outgoingArrows = allElements.filter(el => {
@@ -135,7 +147,7 @@ if (selectedElements.length === 1 &&
       return false;
     });
 
-    // Recurse on each child's shape
+    // Recursively include children’s text
     for (let arrow of outgoingArrows) {
       const childId = arrow.endBinding?.elementId;
       const childEl = allElements.find(e => e.id === childId);
