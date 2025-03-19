@@ -98,6 +98,54 @@ if (selectedElements.length === 1 &&
 
     return children;
   }
+  
+  /**
+  * Recursively build a bullet-list outline from a "root" shape,
+  * including all children on its right side, and each child's children, etc.
+  *
+  * @param {Object} element The shape from which to start
+  * @param {Object[]} allElements All shapes/arrows on the canvas
+  * @param {Set} visited For cycle prevention
+  * @param {number} depth Indentation level
+  * @returns {string} The bullet-list text representing this node and its descendants
+  */
+  function buildOutline(element, allElements, visited = new Set(), depth = 0) {
+    // If we’ve seen this shape already, bail out (avoid cycles)
+    if (visited.has(element.id)) {
+      return "";
+    }
+    visited.add(element.id);
+
+    // We'll try to get the shape's "text" if it exists
+    // If your shapes store text differently, adjust accordingly.
+    let label = element.text?.trim() ?? `Element ${element.id}`;
+
+    // Prepare this node's bullet line
+    let indent = "  ".repeat(depth);
+    let outline = `${indent}- ${label}\n`;
+
+    // Find all arrow-based children to the right
+    const outgoingArrows = allElements.filter(el => {
+      if (el.type === "arrow" && el.startBinding?.elementId === element.id) {
+        const endEl = allElements.find(e => e.id === el.endBinding?.elementId);
+        if (endEl && endEl.x > element.x) {
+          return true;
+        }
+      }
+      return false;
+    });
+
+    // Recurse on each child's shape
+    for (let arrow of outgoingArrows) {
+      const childId = arrow.endBinding?.elementId;
+      const childEl = allElements.find(e => e.id === childId);
+      if (childEl) {
+        outline += buildOutline(childEl, allElements, visited, depth + 1);
+      }
+    }
+
+    return outline;
+  }
 
   // Get all elements in the canvas
   const allElements = ea.getViewElements();
@@ -141,6 +189,23 @@ if (selectedElements.length === 1 &&
     new Notice(`Grouped ${elementsToGroup.length} elements.`);
   } else {
     new Notice("No child elements found for the selected element.");
+  }
+  
+  // Generate the bullet text from the new function
+  const bulletText = buildOutline(rootElement, allElements);
+
+  // Copy bullet text to the clipboard
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(bulletText);
+      new Notice("Mindmap text copied to clipboard!");
+    } else {
+      ea.setClipboard(bulletText);
+      new Notice("Mindmap text copied to plugin clipboard!");
+    }
+  } catch (err) {
+    console.error("Clipboard error:", err);
+    new Notice("Error copying bullet text to clipboard!");
   }
 
   // End the script here since we've performed the grouping action
