@@ -137,9 +137,9 @@ if (selectedElements.length === 1 &&
     let outline = `${indent}${bulletPrefix}${label}\n`;
 
     // Find all arrow-based children to the right
-    const outgoingArrows = allElements.filter(el => {
+    const outgoingArrows = allElements.filter((el) => {
       if (el.type === "arrow" && el.startBinding?.elementId === element.id) {
-        const endEl = allElements.find(e => e.id === el.endBinding?.elementId);
+        const endEl = allElements.find((e) => e.id === el.endBinding?.elementId);
         if (endEl && endEl.x > element.x) {
           return true;
         }
@@ -147,18 +147,28 @@ if (selectedElements.length === 1 &&
       return false;
     });
 
-    // Recursively include children’s text
+    // Collect the child elements (shapes) from those arrows
+    let childShapes = [];
     for (let arrow of outgoingArrows) {
       const childId = arrow.endBinding?.elementId;
-      const childEl = allElements.find(e => e.id === childId);
+      const childEl = allElements.find((e) => e.id === childId);
       if (childEl) {
-        outline += buildOutline(childEl, allElements, visited, depth + 1);
+        childShapes.push(childEl);
       }
+    }
+
+    // **Sort the child elements top-to-bottom** by their y coordinate
+    // (You could also sort by the center y if desired: childEl.y + childEl.height/2)
+    childShapes.sort((a, b) => a.y - b.y);
+
+    // Recursively include children’s text in sorted order
+    for (let childEl of childShapes) {
+      outline += buildOutline(childEl, allElements, visited, depth + 1);
     }
 
     return outline;
   }
-
+  
   // Get all elements in the canvas
   const allElements = ea.getViewElements();
 
