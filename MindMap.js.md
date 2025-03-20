@@ -57,9 +57,255 @@ if (selectedElements.length === 0) {
   return;
 }
 
-// If only one element is selected, perform grouping action
+// -----------------------------------------------------
+// Helper function: check if an element has any line/arrow connections
+function hasConnections(el) {
+  // You can do a quick check in the current canvas:
+  const allElements = ea.getViewElements();
+  const linesOrArrows = allElements.filter(e => e.type === "line" || e.type === "arrow");
+  for (let la of linesOrArrows) {
+    // check if it references `el.id`
+    if ((la.startBinding?.elementId === el.id) || (la.endBinding?.elementId === el.id)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A. Detect the "Single Text Block, No Connections" scenario
+if (
+  selectedElements.length === 1 &&
+  selectedElements[0].type === "text" &&
+  !hasConnections(selectedElements[0]) // we'll define hasConnections() below
+) {
+
+  // -----------------------------------------------------
+  // Helper function: parse a bulleted text block (with indentation)
+  // Returns an array of top-level nodes, each node has { label, children[] } recursively
+  function parseBulletedText(rawText) {
+    // 1. Split into lines, ignoring empty lines
+    const lines = rawText.split(/\r?\n/).map(l => l.trimEnd());
+    
+    // We'll store each line's indentation level + label
+    // We treat the indentation based on leading tabs OR spaces. 
+    // For simplicity, let's assume each leading tab = 1 indent level
+    // (If you have spaces, you can handle them similarly or treat each 2/4 spaces as one indent.)
+    
+    // parse lines into a structure { depth, label }
+    const parsed = [];
+    for (let line of lines) {
+      if (!line.trim()) {
+        // skip blank lines
+        continue;
+      }
+      // measure leading tabs
+      let depth = 0;
+      let i = 0;
+      while (i < line.length && line[i] === "\t") {
+        depth++;
+        i++;
+      }
+      // remove leading tabs from the text
+      let label = line.slice(i).trim();
+      // if there's a dash prefix, remove it
+      if (label.startsWith("- ")) {
+        label = label.slice(2).trim();
+      }
+      parsed.push({ depth, label });
+    }
+
+    // Now we build a tree from this array
+    // Each item is { label, children: [] }
+    // We'll keep an array "stack" to track the current chain of parent nodes
+    const roots = [];
+    const stack = [];
+
+    for (let item of parsed) {
+      const node = { label: item.label, children: [] };
+
+      // If stack is empty, or item.depth === 0 => top-level node
+      if (stack.length === 0 || item.depth === 0) {
+        roots.push(node);
+        stack.length = 0;   // clear stack
+        stack.push({ depth: item.depth, node });
+      } else {
+        // We'll pop from the stack until the top of the stack is at a shallower depth
+        while (stack.length > 0 && stack[stack.length - 1].depth >= item.depth) {
+          stack.pop();
+        }
+        if (stack.length === 0) {
+          // It's effectively top-level again
+          roots.push(node);
+          stack.push({ depth: item.depth, node });
+        } else {
+          // the top of the stack is the parent
+          stack[stack.length - 1].node.children.push(node);
+          stack.push({ depth: item.depth, node });
+        }
+      }
+    }
+
+    return roots;
+  }
+
+
+  // -----------------------------------------------------
+  // Helper function: build a mindmap (left->right) from a bullet node
+  // We place shapes with x offset = 200 * depth, sibling spacing = 100px
+  // Lines have no arrowheads
+  async function buildMindmapFromBullets(rootNode, originalTextEl) {
+    // We'll create shapes for each bullet node recursively
+    // We'll store them so we can connect them with lines
+    // We'll also keep track of the bounding box so we know where to place them
+
+    // Let's pick a starting X, Y near the original text element
+    // or you can pick a default like (100,100)
+    const startX = originalTextEl.x;
+    const startY = originalTextEl.y;
+
+    // We'll define a function that places each node
+    // Depth-based horizontal offset: depth * 200
+    // We'll track vertical offset for siblings
+    let nodeIdCounter = 0;
+    const placedNodes = [];
+
+    // measure text sizing if you want. We'll just pick a default width/height
+    // or you can let Excalidraw auto-size the text
+    // For a better approach, we might measure the text and set the element width/height accordingly.
+    // We'll keep it simple for now.
+    const defaultWidth = 150;
+    const defaultHeight = 40;
+
+    // We'll do a recursive function that places node + children
+    function placeNode(node, depth, siblingIndex, siblingCount) {
+      // y offset from top of all siblings
+      // If we have siblingCount siblings at this depth, they occupy totalHeight = (siblingCount-1)*verticalSpacing
+      // We'll try to center them around 0. 
+      const verticalSpacing = 100;
+      const xPos = startX + depth * 200; // horizontal offset
+      // We'll offset y by (siblingIndex * verticalSpacing) - some center offset
+      // For simplicity, let's not do fancy centering. We'll just stack them downward
+      const yPos = startY + siblingIndex * verticalSpacing; 
+
+      // create a text element with node.label
+      // We use the Excalidraw Automate "ea.style", "ea.addText" or so:
+      ea.style.fontSize = 20;
+      ea.style.textAlign = "left";
+      const newNodeId = ea.addText(xPos, yPos, node.label);
+      // optionally size it or style it more
+      // update the element in the "EAforEditing" if you want
+
+      placedNodes.push({ id: newNodeId, label: node.label, depth, x: xPos, y: yPos, nodeRef: node });
+
+      // place children
+      for (let i = 0; i < node.children.length; i++) {
+        placeNode(node.children[i], depth + 1, i, node.children.length);
+      }
+    }
+
+    // We call placeNode on the root node alone. 
+    // But if the root node itself has siblings, that means we actually have
+    // multiple "top-level" items in the children array. Usually not the case if we picked a single root.
+    // We'll place just the root with siblingIndex=0, siblingCount=1
+    placeNode(rootNode, 0, 0, 1);
+
+    // Now we connect them. We'll do it after we place them so we have all coords
+    // Let's define a function to find the placed node for a given nodeRef
+    function findPlaced(nodeRef) {
+      return placedNodes.find(p => p.nodeRef === nodeRef);
+    }
+
+    // We'll do a recursion that for each node, we connect it to its children
+    function connectChildren(node) {
+      // for each child in node.children, we find the parent's placed info and the child's placed info
+      for (let child of node.children) {
+        const parentPlaced = findPlaced(node);
+        const childPlaced = findPlaced(child);
+        if (parentPlaced && childPlaced) {
+          // We'll create a line from parent's right edge to child's left edge
+          // or we can do a quick midpoint approach. 
+          // We'll define a getEdge func or we do a direct approach:
+          const parentXCenter = parentPlaced.x;  // that's top-left corner, actually
+          // If you want the center, you'd do parentXCenter + (some width / 2)
+          const pxCenter = parentXCenter + (defaultWidth / 2);
+          const pyCenter = parentPlaced.y + (defaultHeight / 2);
+
+          const childXCenter = childPlaced.x + (defaultWidth / 2);
+          const childYCenter = childPlaced.y + (defaultHeight / 2);
+
+          ea.style.strokeColor = "#000000";
+          ea.style.strokeWidth = 1;
+          ea.style.roughness = 0;
+          // No arrowheads
+          ea.addArrow(
+            [
+              [pxCenter, pyCenter],
+              [childXCenter, childYCenter]
+            ],
+            {
+              startArrowHead: null,
+              endArrowHead: null,
+              numberOfPoints: 0, // straight line
+            }
+          );
+        }
+        // recurse
+        connectChildren(child);
+      }
+    }
+    connectChildren(rootNode);
+
+    // Now we add everything to the view
+    // remove or hide the original text block if you prefer
+    ea.copyViewElementsToEAforEditing([]);
+    ea.deleteViewElements([originalTextEl.id]); // if you want to remove the original text
+
+    await ea.addElementsToView(false, false, true);
+    new Notice("Created mindmap from bulleted text!");
+  }
+
+  // The user presumably wants to convert a bulleted text block to a mindmap
+  const textElement = selectedElements[0];
+  
+  // 1. Grab the text (including line breaks)
+  let rawText = textElement.text || "";
+  rawText = rawText.trim();
+  if (!rawText) {
+    new Notice("The selected text block is empty.");
+    return;
+  }
+
+  // 2. Parse the bulleted text into a tree
+  const bulletTree = parseBulletedText(rawText);
+
+  if (!bulletTree || bulletTree.length === 0) {
+    new Notice("No valid bullet lines found in the selected text block.");
+    return;
+  }
+
+  // 3. Handle single vs. multiple top-level items
+  let rootNode;
+  if (bulletTree.length === 1) {
+    // We have exactly one top-level node
+    rootNode = bulletTree[0];
+  } else {
+    // We have multiple top-level items
+    // We'll create an artificial root with label "Root" that has them as children
+    rootNode = {
+      label: "Root",
+      children: bulletTree
+    };
+  }
+
+  // 4. Create the mindmap from that root node
+  buildMindmapFromBullets(rootNode, textElement);
+
+  return; // end script
+}
+
+// If only one element is selected, and it is connected, perform grouping action
 if (selectedElements.length === 1 && 
-    selectedElements[0].type !== 'line' && selectedElements[0].type != 'arrow') {
+    selectedElements[0].type === 'text') {
   const rootElement = selectedElements[0];
 
   // Function to recursively find all child elements

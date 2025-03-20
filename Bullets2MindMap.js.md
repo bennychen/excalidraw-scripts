@@ -80,13 +80,24 @@ const parents = [];
 const spacesPerIndent = 2; // Adjust based on your indentation
 
 for (const line of lines) {
-  const match = line.match(/^(\s*)[-*+]\s+(.*)$/);
-  if (match) {
-    const indent = match[1]; // Leading whitespace
-    const text = match[2]; // The text after '- ', '* ', or '+ '
-    const indentLength = indent.replace(/\t/g, '    ').length; // Replace tabs with spaces
+  // This pattern says:
+  //   - capture leading whitespace in group 1
+  //   - optionally capture a bullet (- * or +) in group 2
+  //   - optionally allow an extra space after the bullet
+  //   - capture the rest of the line in group 3
+  const match = line.match(/^(\s*)([-*+]?)(\s*)(.*)$/);
 
-    // Determine the level based on indentation
+  if (match) {
+    const indent = match[1] || "";
+    // bullet symbol if present
+    const bullet = match[2] || "";
+    // possible space after bullet
+    const spaceAfterBullet = match[3] || "";
+    // the actual text
+    const text = match[4] || "";
+
+    // Convert tabs to spaces before measuring indentation
+    const indentLength = indent.replace(/\t/g, '    ').length;
     const level = indentLength / spacesPerIndent;
 
     const node = {
@@ -98,6 +109,7 @@ for (const line of lines) {
       x: 0,
       y: 0
     };
+    console.log("create node [" + node.text + "] to level " + node.level);
 
     if (level > 0 && parents[level - 1]) {
       node.parent = parents[level - 1];
