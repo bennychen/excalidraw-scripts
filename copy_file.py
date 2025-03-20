@@ -21,7 +21,16 @@ for file_name in os.listdir(current_folder):
     
     # Check if it is a file and not this script
     if os.path.isfile(source_file) and file_name != this_script:
-        shutil.copy(source_file, destination_file)
-        print(f"Copied: {file_name}")
+        # Special handling for JavaScript files
+        if file_name.endswith('.js'):
+            # Change destination to add .md extension
+            destination_file = destination_file + '.md'
+            # Simply copy the file without modifying content
+            shutil.copy(source_file, destination_file)
+            print(f"Copied with renamed extension: {file_name} -> {os.path.basename(destination_file)}")
+        else:
+            # Regular file copying
+            shutil.copy(source_file, destination_file)
+            print(f"Copied: {file_name}")
 
 print("All files (excluding this script) copied successfully!")
