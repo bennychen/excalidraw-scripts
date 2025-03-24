@@ -208,8 +208,8 @@ const sourceTextCenter = sourceTextY + sourceTextHeight / 2;
 // Initialize nextY to start from a position that will center the mindmap
 let nextY = sourceTextCenter - (estimatedTotalHeight / 2);
 
-// Function to assign positions
-function assignPositions(node, level, x) {
+// Function to assign initial positions - first pass
+function assignInitialPositions(node, level, x) {
   node.x = x;
 
   if (!node.children || node.children.length === 0) {
@@ -220,7 +220,7 @@ function assignPositions(node, level, x) {
     // Internal node
     // Process children first
     for (let child of node.children) {
-      assignPositions(child, level + 1, x + xSpacing);
+      assignInitialPositions(child, level + 1, x + xSpacing);
     }
     // After processing children, set y position as average of children's y positions
     const firstChildY = node.children[0].y;
@@ -232,9 +232,9 @@ function assignPositions(node, level, x) {
 // Starting x position for root nodes - position right after the source text element
 const rootX = sourceTextX + sourceTextWidth + 20; // 20px gap between source and mindmap
 
-// Assign positions to all root nodes
+// Assign initial positions to all root nodes
 for (const root of rootNodes) {
-  assignPositions(root, 0, rootX);
+  assignInitialPositions(root, 0, rootX);
 }
 
 // Apply style from the first node
@@ -242,6 +242,43 @@ ea.style.strokeColor = "#000000"; // Default to black
 ea.style.strokeWidth = 1;
 ea.style.strokeStyle = "solid";
 ea.style.strokeSharpness = "sharp";
+ea.style.roughness = 2; // Add roughness for hand-drawn appearance
+
+// Try numeric constants for font family (0, 1, 2, 3 etc.)
+ea.style.fontFamily = 1; // Try a different numeric constant for font family
+
+// Set font size
+ea.style.fontSize = 20; // Set a larger font size for better readability
+
+// Create a function for creating text elements with consistent settings
+function createTextElement(x, y, text) {
+  // Try setting all potential font properties in the global style
+  ea.style.fontFamily = 1;       // Try numeric value 2
+  ea.style.font = "Excalidraw";      // Try string name
+  ea.style.fontStyle = "normal";
+  ea.style.fontSize = 20;
+  ea.style.textAlign = "center";
+  ea.style.roughness = 2;
+  
+  // Add a text element with detailed options - try all possible combinations
+  return ea.addText(x, y, text, {
+    fontFamily: 1,             // Try numeric value 2
+    font: "Excalidraw",            // Try explicit font name
+    fontSize: 20,
+    textAlign: "center",
+    roughness: 2,
+    strokeWidth: 1,
+    strokeStyle: "solid",
+    strokeSharpness: "sharp",
+    backgroundColor: "transparent",
+    fillStyle: "solid",
+    strokeColor: "#000000",
+    opacity: 100,
+    handDrawn: true,
+    fontSource: "Excalidraw",
+    isHandDrawn: true
+  });
+}
 
 // Set arrow options based on settings
 const arrowOptions = {
@@ -251,19 +288,113 @@ const arrowOptions = {
   strokeColor: ea.style.strokeColor,
   strokeWidth: ea.style.strokeWidth,
   strokeStyle: ea.style.strokeStyle,
-  roughness: 0, // Adjust as needed
+  roughness: 2, // Add roughness for hand-drawn appearance
 };
 
-// Now create elements
+// Create initial elements so we can calculate positions
 for (const node of nodes) {
   const x = node.x;
   const y = node.y;
-
-  // Create the text element
+  
+  // Create a temporary element - we'll replace these later
   const elementId = ea.addText(x, y, node.text);
   const element = ea.getElement(elementId);
-
+  
   node.element = element;
+}
+
+// Function to adjust positions based on actual element widths - second pass
+function adjustPositions(node, level) {
+  if (!node.children || node.children.length === 0) {
+    return; // No adjustments needed for leaf nodes
+  }
+  
+  // Calculate the parent's right edge
+  const parentRightEdge = node.x + node.element.width;
+  
+  // Adjust positions of children
+  for (let child of node.children) {
+    // Move the child to be xSpacing distance from parent's right edge
+    child.element.x = parentRightEdge + xSpacing;
+    child.x = child.element.x; // Update node's x to match element
+    
+    // Recursively adjust the children of this child
+    adjustPositions(child, level + 1);
+  }
+}
+
+// Adjust positions for all root nodes
+for (const root of rootNodes) {
+  adjustPositions(root, 0);
+}
+
+// Now we have the correct positions, let's collect them
+const nodePositions = [];
+for (const node of nodes) {
+  nodePositions.push({
+    id: node.element.id,
+    x: node.x,
+    y: node.y,
+    text: node.text,
+    node: node
+  });
+}
+
+// Store the old element IDs for deletion
+const oldElementIds = nodes.map(node => node.element.id);
+
+// Clear out old element references
+for (const node of nodes) {
+  node.element = null;
+}
+
+// Now create the actual elements with hand-drawn style
+for (const item of nodePositions) {
+  // Create a new text element with our function
+  const elementId = createTextElement(item.x, item.y, item.text);
+  const element = ea.getElement(elementId);
+  
+  // Update the node reference
+  item.node.element = element;
+}
+
+// Connect elements with arrows
+for (const node of nodes) {
+  if (node.parent && node.element && node.parent.element) {
+    const sourceEl = node.parent.element; // Parent element
+    const targetEl = node.element;        // Child element
+
+    const sourceCenterX = sourceEl.x + sourceEl.width / 2;
+    const sourceCenterY = sourceEl.y + sourceEl.height / 2;
+
+    const targetCenterX = targetEl.x + targetEl.width / 2;
+    const targetCenterY = targetEl.y + targetEl.height / 2;
+
+    // Get edge points
+    const [startX, startY] = getEdgePoint(sourceEl, targetCenterX, targetCenterY);
+    const [endX, endY] = getEdgePoint(targetEl, sourceCenterX, sourceCenterY);
+
+    // Create the arrow with startObjectId and endObjectId
+    ea.addArrow([[startX, startY], [endX, endY]], {
+      ...arrowOptions,
+      startObjectId: sourceEl.id,
+      endObjectId: targetEl.id,
+    });
+  }
+}
+
+// Now delete the old temporary elements
+try {
+  // Instead of using deleteViewElements, mark each element as deleted
+  // and then update the scene - this is more reliable
+  for (const elementId of oldElementIds) {
+    const element = ea.getElement(elementId);
+    if (element) {
+      element.isDeleted = true;
+    }
+  }
+} catch (e) {
+  console.log("Error deleting elements:", e);
 }
 
 function getEdgePoint(element, targetX, targetY) {
@@ -308,34 +439,6 @@ function getEdgePoint(element, targetX, targetY) {
 
   return [edgeX, edgeY];
 }
-
-// Connect elements with arrows
-for (const node of nodes) {
-  if (node.parent) {
-    const sourceEl = node.parent.element; // Parent element
-    const targetEl = node.element;        // Child element
-
-    const sourceCenterX = sourceEl.x + sourceEl.width / 2;
-    const sourceCenterY = sourceEl.y + sourceEl.height / 2;
-
-    const targetCenterX = targetEl.x + targetEl.width / 2;
-    const targetCenterY = targetEl.y + targetEl.height / 2;
-
-    // Get edge points
-    const [startX, startY] = getEdgePoint(sourceEl, targetCenterX, targetCenterY);
-    const [endX, endY] = getEdgePoint(targetEl, sourceCenterX, sourceCenterY);
-
-    // Create the arrow with startObjectId and endObjectId
-    ea.addArrow([[startX, startY], [endX, endY]], {
-      ...arrowOptions,
-      startObjectId: sourceEl.id,
-      endObjectId: targetEl.id,
-    });
-  }
-}
-
-// Optional: Remove the original text element
-// ea.deleteViewElements([textElement.id]);
 
 // Finalize by adding elements to view
 await ea.addElementsToView(false, false, true);
