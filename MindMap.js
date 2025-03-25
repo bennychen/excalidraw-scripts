@@ -81,185 +81,355 @@ if (
 
   // -----------------------------------------------------
   // Helper function: parse a bulleted text block (with indentation)
-  // Returns an array of top-level nodes, each node has { label, children[] } recursively
+  // Returns an array of parsed nodes with relationships
   function parseBulletedText(rawText) {
-    // 1. Split into lines, ignoring empty lines
-    const lines = rawText.split(/\r?\n/).map(l => l.trimEnd());
+    const lines = rawText.split('\n');
+    // Track the indentation of each level as we go
+    const levelIndents = [0]; // Start with root level at 0 indentation
+    let lastLevel = 0;
+    let prevIndent = 0;
     
-    // We'll store each line's indentation level + label
-    // We treat the indentation based on leading tabs OR spaces. 
-    // For simplicity, let's assume each leading tab = 1 indent level
-    // (If you have spaces, you can handle them similarly or treat each 2/4 spaces as one indent.)
+    // Parse each line and build a hierarchical structure
+    const nodes = [];
+    const parents = [];
     
-    // parse lines into a structure { depth, label }
-    const parsed = [];
-    for (let line of lines) {
-      if (!line.trim()) {
-        // skip blank lines
+    // Helper function to determine the indentation level
+    function getIndentLevel(line, prevIndent) {
+      // Extract leading whitespace
+      const match = line.match(/^(\s*)([-*+]?)(.*)$/);
+      if (!match) return null;
+      
+      const leading = match[1]?.replace(/\t/g, "    ") || "";
+      const bullet = match[2] || "";
+      const content = match[3]?.trim() || "";
+      const currentIndent = leading.length;
+      
+      let level = 0;
+      
+      // Compare with previous indentation
+      if (currentIndent > prevIndent) {
+        // Child of previous line
+        level = lastLevel + 1;
+        levelIndents[level] = currentIndent;
+      } else if (currentIndent === prevIndent) {
+        // Sibling of previous line
+        level = lastLevel;
+      } else {
+        // Find the parent level by backtracking
+        for (level = lastLevel - 1; level >= 0; level--) {
+          if (levelIndents[level] === currentIndent) {
+            break; // Found the right level
+          } else if (levelIndents[level] < currentIndent) {
+            // We're between two known levels, use the parent
+            break;
+          }
+        }
+        // Ensure we don't go below 0
+        level = Math.max(0, level);
+      }
+      
+      lastLevel = level;
+      return { level, bullet, content };
+    }
+
+    for (const line of lines) {
+      if (!line.trim()) continue; // skip empty
+      
+      const info = getIndentLevel(line, prevIndent);
+      if (!info) {
+        new Notice("Invalid line: " + line);
         continue;
       }
-      // measure leading tabs
-      let depth = 0;
-      let i = 0;
-      while (i < line.length && line[i] === "\t") {
-        depth++;
-        i++;
+      
+      // Update the previous indent for next iteration
+      prevIndent = line.match(/^(\s*)/)[0].replace(/\t/g, "    ").length;
+      
+      // destructure info
+      const { level, content } = info;
+      const node = {
+        label: content,
+        level,
+        parent: null,
+        children: [],
+      };
+
+      // If level > 0, attach to the parent's children
+      if (level > 0 && parents[level - 1]) {
+        node.parent = parents[level - 1];
+        parents[level - 1].children.push(node);
       }
-      // remove leading tabs from the text
-      let label = line.slice(i).trim();
-      // if there's a dash prefix, remove it
-      if (label.startsWith("- ")) {
-        label = label.slice(2).trim();
-      }
-      parsed.push({ depth, label });
+
+      // Keep track of parents at each level
+      parents[level] = node;
+
+      // Remove deeper-level parents if we just stepped back in indentation
+      parents.length = level + 1;
+
+      nodes.push(node);
     }
+    
+    // Identify root nodes
+    const rootNodes = nodes.filter(node => !node.parent);
 
-    // Now we build a tree from this array
-    // Each item is { label, children: [] }
-    // We'll keep an array "stack" to track the current chain of parent nodes
-    const roots = [];
-    const stack = [];
-
-    for (let item of parsed) {
-      const node = { label: item.label, children: [] };
-
-      // If stack is empty, or item.depth === 0 => top-level node
-      if (stack.length === 0 || item.depth === 0) {
-        roots.push(node);
-        stack.length = 0;   // clear stack
-        stack.push({ depth: item.depth, node });
-      } else {
-        // We'll pop from the stack until the top of the stack is at a shallower depth
-        while (stack.length > 0 && stack[stack.length - 1].depth >= item.depth) {
-          stack.pop();
-        }
-        if (stack.length === 0) {
-          // It's effectively top-level again
-          roots.push(node);
-          stack.push({ depth: item.depth, node });
-        } else {
-          // the top of the stack is the parent
-          stack[stack.length - 1].node.children.push(node);
-          stack.push({ depth: item.depth, node });
-        }
+    // If there are multiple root nodes, create a default "Root" node and make all roots its children
+    if (rootNodes.length > 1) {
+      // Create a new root node
+      const defaultRootNode = {
+        label: "Root",
+        level: 0,
+        parent: null,
+        children: [],
+      };
+      
+      // Make all original root nodes children of the new root
+      for (const originalRoot of rootNodes) {
+        originalRoot.parent = defaultRootNode;
+        defaultRootNode.children.push(originalRoot);
+        originalRoot.level = 1; // Update level since it's now a child
       }
+      
+      // Add the new root node to the nodes array
+      nodes.push(defaultRootNode);
+      
+      return [defaultRootNode]; // Return only the new default root
     }
-
-    return roots;
+    
+    return rootNodes;
   }
-
-
+  
   // -----------------------------------------------------
   // Helper function: build a mindmap (left->right) from a bullet node
   // We place shapes with x offset = 200 * depth, sibling spacing = 100px
   // Lines have no arrowheads
   async function buildMindmapFromBullets(rootNode, originalTextEl) {
-    // We'll create shapes for each bullet node recursively
-    // We'll store them so we can connect them with lines
-    // We'll also keep track of the bounding box so we know where to place them
+    // Store the source text element's position and dimensions
+    const sourceTextX = originalTextEl.x;
+    const sourceTextY = originalTextEl.y;
+    const sourceTextWidth = originalTextEl.width;
+    const sourceTextHeight = originalTextEl.height;
 
-    // Let's pick a starting X, Y near the original text element
-    // or you can pick a default like (100,100)
-    const startX = originalTextEl.x;
-    const startY = originalTextEl.y;
+    // Get spacing values from settings
+    const xSpacing = 200; // Horizontal distance between levels
+    const ySpacing = 100; // Vertical spacing between sibling nodes
 
-    // We'll define a function that places each node
-    // Depth-based horizontal offset: depth * 200
-    // We'll track vertical offset for siblings
-    let nodeIdCounter = 0;
-    const placedNodes = [];
-
-    // measure text sizing if you want. We'll just pick a default width/height
-    // or you can let Excalidraw auto-size the text
-    // For a better approach, we might measure the text and set the element width/height accordingly.
-    // We'll keep it simple for now.
-    const defaultWidth = 150;
-    const defaultHeight = 40;
-
-    // We'll do a recursive function that places node + children
-    function placeNode(node, depth, siblingIndex, siblingCount) {
-      // y offset from top of all siblings
-      // If we have siblingCount siblings at this depth, they occupy totalHeight = (siblingCount-1)*verticalSpacing
-      // We'll try to center them around 0. 
-      const verticalSpacing = 100;
-      const xPos = startX + depth * 200; // horizontal offset
-      // We'll offset y by (siblingIndex * verticalSpacing) - some center offset
-      // For simplicity, let's not do fancy centering. We'll just stack them downward
-      const yPos = startY + siblingIndex * verticalSpacing; 
-
-      // create a text element with node.label
-      // We use the Excalidraw Automate "ea.style", "ea.addText" or so:
-      ea.style.fontSize = 20;
-      ea.style.textAlign = "left";
-      const newNodeId = ea.addText(xPos, yPos, node.label);
-      // optionally size it or style it more
-      // update the element in the "EAforEditing" if you want
-
-      placedNodes.push({ id: newNodeId, label: node.label, depth, x: xPos, y: yPos, nodeRef: node });
-
-      // place children
-      for (let i = 0; i < node.children.length; i++) {
-        placeNode(node.children[i], depth + 1, i, node.children.length);
+    // Calculate the total height needed for the mindmap
+    // First, count the number of leaf nodes (nodes without children)
+    const countLeafNodes = (node) => {
+      if (!node.children || node.children.length === 0) {
+        return 1;
       }
-    }
+      return node.children.reduce((sum, child) => sum + countLeafNodes(child), 0);
+    };
+    
+    const leafNodeCount = countLeafNodes(rootNode);
+    
+    // Calculate estimated total height based on leaf nodes and spacing
+    const estimatedTotalHeight = (leafNodeCount - 1) * ySpacing;
 
-    // We call placeNode on the root node alone. 
-    // But if the root node itself has siblings, that means we actually have
-    // multiple "top-level" items in the children array. Usually not the case if we picked a single root.
-    // We'll place just the root with siblingIndex=0, siblingCount=1
-    placeNode(rootNode, 0, 0, 1);
+    // Calculate source text vertical center
+    const sourceTextCenter = sourceTextY + sourceTextHeight / 2;
 
-    // Now we connect them. We'll do it after we place them so we have all coords
-    // Let's define a function to find the placed node for a given nodeRef
-    function findPlaced(nodeRef) {
-      return placedNodes.find(p => p.nodeRef === nodeRef);
-    }
+    // Initialize nextY to start from a position that will center the mindmap
+    let nextY = sourceTextCenter - (estimatedTotalHeight / 2);
 
-    // We'll do a recursion that for each node, we connect it to its children
-    function connectChildren(node) {
-      // for each child in node.children, we find the parent's placed info and the child's placed info
-      for (let child of node.children) {
-        const parentPlaced = findPlaced(node);
-        const childPlaced = findPlaced(child);
-        if (parentPlaced && childPlaced) {
-          // We'll create a line from parent's right edge to child's left edge
-          // or we can do a quick midpoint approach. 
-          // We'll define a getEdge func or we do a direct approach:
-          const parentXCenter = parentPlaced.x;  // that's top-left corner, actually
-          // If you want the center, you'd do parentXCenter + (some width / 2)
-          const pxCenter = parentXCenter + (defaultWidth / 2);
-          const pyCenter = parentPlaced.y + (defaultHeight / 2);
+    // Function to assign initial positions - first pass
+    function assignInitialPositions(node, level, x) {
+      node.x = x;
 
-          const childXCenter = childPlaced.x + (defaultWidth / 2);
-          const childYCenter = childPlaced.y + (defaultHeight / 2);
-
-          ea.style.strokeColor = "#000000";
-          ea.style.strokeWidth = 1;
-          ea.style.roughness = 0;
-          // No arrowheads
-          ea.addArrow(
-            [
-              [pxCenter, pyCenter],
-              [childXCenter, childYCenter]
-            ],
-            {
-              startArrowHead: null,
-              endArrowHead: null,
-              numberOfPoints: 0, // straight line
-            }
-          );
+      if (!node.children || node.children.length === 0) {
+        // Leaf node
+        node.y = nextY;
+        nextY += ySpacing;
+      } else {
+        // Process children first
+        for (let child of node.children) {
+          assignInitialPositions(child, level + 1, x + xSpacing);
         }
-        // recurse
-        connectChildren(child);
+        // After processing children, set y position as average of children's y positions
+        const firstChildY = node.children[0].y;
+        const lastChildY = node.children[node.children.length - 1].y;
+        node.y = (firstChildY + lastChildY) / 2;
       }
     }
-    connectChildren(rootNode);
 
-    // Now we add everything to the view
-    // remove or hide the original text block if you prefer
+    // Starting x position for root node - position right after the source text element
+    const rootX = sourceTextX + sourceTextWidth + 20; // 20px gap between source and mindmap
+
+    // Assign initial positions
+    assignInitialPositions(rootNode, 0, rootX);
+
+    // Apply style from the first node
+    ea.style.strokeColor = "#000000"; // Default to black
+    ea.style.strokeWidth = 1;
+    ea.style.strokeStyle = "solid";
+    ea.style.strokeSharpness = "sharp";
+    ea.style.fontFamily = 5;
+
+    // Create a function for creating text elements with consistent settings
+    function createTextElement(x, y, text) {
+      return ea.addText(x, y, text, {
+        fontFamily: 5,
+        fontSize: 20,
+        textAlign: "center",
+        roughness: 2,
+        strokeWidth: 1,
+        strokeStyle: "solid",
+        strokeSharpness: "sharp",
+        backgroundColor: "transparent",
+        fillStyle: "solid",
+        strokeColor: "#000000",
+        opacity: 100,
+        handDrawn: true,
+        isHandDrawn: true
+      });
+    }
+
+    // Set arrow options based on settings
+    const arrowOptions = {
+      startArrowHead: settings["Starting arrowhead"].value === "none" ? null : settings["Starting arrowhead"].value,
+      endArrowHead: settings["Ending arrowhead"].value === "none" ? null : settings["Ending arrowhead"].value,
+      numberOfPoints: Math.floor(settings["Line points"].value),
+      strokeColor: ea.style.strokeColor,
+      strokeWidth: ea.style.strokeWidth,
+      strokeStyle: ea.style.strokeStyle,
+      roughness: 2, // Add roughness for hand-drawn appearance
+    };
+
+    // First create temporary elements to calculate actual space needed
+    function createTemporaryElements(node) {
+      const elementId = ea.addText(node.x, node.y, node.label);
+      node.element = ea.getElement(elementId);
+      
+      if (node.children) {
+        for (const child of node.children) {
+          createTemporaryElements(child);
+        }
+      }
+    }
+    
+    createTemporaryElements(rootNode);
+
+    // Adjust positions based on actual element widths
+    function adjustPositions(node) {
+      if (!node.children || node.children.length === 0) {
+        return; // No adjustments needed for leaf nodes
+      }
+      
+      // Calculate the parent's right edge
+      const parentRightEdge = node.x + node.element.width;
+      
+      // Adjust positions of children
+      for (let child of node.children) {
+        // Move the child to be xSpacing distance from parent's right edge
+        child.element.x = parentRightEdge + xSpacing;
+        child.x = child.element.x; // Update node's x to match element
+        
+        // Recursively adjust the children of this child
+        adjustPositions(child);
+      }
+    }
+
+    // Adjust positions
+    adjustPositions(rootNode);
+
+    // Store positions and prepare for final elements
+    const nodePositions = [];
+    function collectNodePositions(node) {
+      nodePositions.push({
+        id: node.element.id,
+        x: node.x,
+        y: node.y,
+        text: node.label,
+        node: node
+      });
+      
+      if (node.children) {
+        for (const child of node.children) {
+          collectNodePositions(child);
+        }
+      }
+    }
+    
+    collectNodePositions(rootNode);
+
+    // Store the old element IDs for deletion
+    const oldElementIds = nodePositions.map(item => item.id);
+
+    // Clear out old element references
+    function clearElementReferences(node) {
+      node.element = null;
+      if (node.children) {
+        for (const child of node.children) {
+          clearElementReferences(child);
+        }
+      }
+    }
+    
+    clearElementReferences(rootNode);
+
+    // Create the actual elements with hand-drawn style
+    for (const item of nodePositions) {
+      // Create a new text element with our function
+      const elementId = createTextElement(item.x, item.y, item.text);
+      const element = ea.getElement(elementId);
+      
+      // Update the node reference
+      item.node.element = element;
+    }
+
+    // Connect elements with arrows
+    function connectWithArrows(node) {
+      if (!node.children || node.children.length === 0) {
+        return;
+      }
+      
+      for (const child of node.children) {
+        if (node.element && child.element) {
+          const sourceEl = node.element; // Parent element
+          const targetEl = child.element; // Child element
+
+          const sourceCenterX = sourceEl.x + sourceEl.width / 2;
+          const sourceCenterY = sourceEl.y + sourceEl.height / 2;
+
+          const targetCenterX = targetEl.x + targetEl.width / 2;
+          const targetCenterY = targetEl.y + targetEl.height / 2;
+
+          // Get edge points using the getEdgePoint function
+          const [startX, startY] = getEdgePoint(sourceEl, targetCenterX, targetCenterY);
+          const [endX, endY] = getEdgePoint(targetEl, sourceCenterX, sourceCenterY);
+
+          // Create the arrow with startObjectId and endObjectId
+          ea.addArrow([[startX, startY], [endX, endY]], {
+            ...arrowOptions,
+            startObjectId: sourceEl.id,
+            endObjectId: targetEl.id,
+          });
+        }
+        
+        // Recursively connect child's children
+        connectWithArrows(child);
+      }
+    }
+    
+    connectWithArrows(rootNode);
+
+    // Delete the old temporary elements
+    try {
+      for (const elementId of oldElementIds) {
+        const element = ea.getElement(elementId);
+        if (element) {
+          element.isDeleted = true;
+        }
+      }
+    } catch (e) {
+      console.log("Error deleting elements:", e);
+    }
+
+    // Remove or hide the original text block
     ea.copyViewElementsToEAforEditing([]);
-    ea.deleteViewElements([originalTextEl.id]); // if you want to remove the original text
+    ea.deleteViewElements([originalTextEl.id]);
 
+    // Finalize by adding elements to view
     await ea.addElementsToView(false, false, true);
     new Notice("Created mindmap from bulleted text!");
   }
@@ -276,26 +446,15 @@ if (
   }
 
   // 2. Parse the bulleted text into a tree
-  const bulletTree = parseBulletedText(rawText);
+  const rootNodes = parseBulletedText(rawText);
 
-  if (!bulletTree || bulletTree.length === 0) {
+  if (!rootNodes || rootNodes.length === 0) {
     new Notice("No valid bullet lines found in the selected text block.");
     return;
   }
 
-  // 3. Handle single vs. multiple top-level items
-  let rootNode;
-  if (bulletTree.length === 1) {
-    // We have exactly one top-level node
-    rootNode = bulletTree[0];
-  } else {
-    // We have multiple top-level items
-    // We'll create an artificial root with label "Root" that has them as children
-    rootNode = {
-      label: "Root",
-      children: bulletTree
-    };
-  }
+  // 3. Get the root node (we've already handled the multiple root case in parseBulletedText)
+  const rootNode = rootNodes[0];
 
   // 4. Create the mindmap from that root node
   buildMindmapFromBullets(rootNode, textElement);
@@ -360,7 +519,7 @@ if (selectedElements.length === 1 &&
   * @returns {string} The bullet-list text representing this node and its descendants
   */
   function buildOutline(element, allElements, visited = new Set(), depth = 0) {
-    // If we’ve seen this shape already, bail out (avoid cycles)
+    // If we've seen this shape already, bail out (avoid cycles)
     if (visited.has(element.id)) {
       return "";
     }
@@ -407,7 +566,7 @@ if (selectedElements.length === 1 &&
     // (You could also sort by the center y if desired: childEl.y + childEl.height/2)
     childShapes.sort((a, b) => a.y - b.y);
 
-    // Recursively include children’s text in sorted order
+    // Recursively include children's text in sorted order
     for (let childEl of childShapes) {
       outline += buildOutline(childEl, allElements, visited, depth + 1);
     }
@@ -597,8 +756,8 @@ for (let i = 1; i < nodes.length; i++) {
  * Always returns a point on the left or right boundary of `element`.
  * If the target is to the right, you get the right edge (x + w).
  * If the target is to the left, you get the left edge (x).
- * We then compute a vertical offset using the slope from the shape’s center
- * and clamp the result so it stays within the element’s top and bottom.
+ * We then compute a vertical offset using the slope from the shape's center
+ * and clamp the result so it stays within the element's top and bottom.
  */
 function getEdgePoint(element, targetX, targetY) {
   const x = element.x;
