@@ -242,28 +242,12 @@ ea.style.strokeColor = "#000000"; // Default to black
 ea.style.strokeWidth = 1;
 ea.style.strokeStyle = "solid";
 ea.style.strokeSharpness = "sharp";
-ea.style.roughness = 2; // Add roughness for hand-drawn appearance
-
-// Try numeric constants for font family (0, 1, 2, 3 etc.)
-ea.style.fontFamily = 1; // Try a different numeric constant for font family
-
-// Set font size
-ea.style.fontSize = 20; // Set a larger font size for better readability
+ea.style.fontFamily = 5; 
 
 // Create a function for creating text elements with consistent settings
 function createTextElement(x, y, text) {
-  // Try setting all potential font properties in the global style
-  ea.style.fontFamily = 1;       // Try numeric value 2
-  ea.style.font = "Excalidraw";      // Try string name
-  ea.style.fontStyle = "normal";
-  ea.style.fontSize = 20;
-  ea.style.textAlign = "center";
-  ea.style.roughness = 2;
-  
-  // Add a text element with detailed options - try all possible combinations
   return ea.addText(x, y, text, {
-    fontFamily: 1,             // Try numeric value 2
-    font: "Excalidraw",            // Try explicit font name
+    fontFamily: 5,
     fontSize: 20,
     textAlign: "center",
     roughness: 2,
@@ -275,7 +259,6 @@ function createTextElement(x, y, text) {
     strokeColor: "#000000",
     opacity: 100,
     handDrawn: true,
-    fontSource: "Excalidraw",
     isHandDrawn: true
   });
 }
