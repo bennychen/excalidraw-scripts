@@ -81,68 +81,64 @@ const ySpacing = parseFloat(settings["Vertical spacing"].value);   // Vertical s
 
 // Parse the bulleted text
 const lines = bulletedText.split('\n');
-// A list of known indentations, from smallest to largest, where index = nesting level.
-// We start with 0 so any line with zero indentation is considered level 0 (root).
-let indentationLevels = [0];
+// Track the indentation of each level as we go
+const levelIndents = [0]; // Start with root level at 0 indentation
+let lastLevel = 0;
 
-function getIndentLevel(line) {
-  // 1. Extract leading whitespace (tabs or spaces)
+function getIndentLevel(line, prevIndent) {
+  // Extract leading whitespace
   const match = line.match(/^(\s*)([-*+]?)(.*)$/);
-  if (!match) {
-    return null;
-  }
-  let leading = match[1] ?? "";   // Leading whitespace
-  let bullet  = match[2] ?? "";  // The bullet char if present
-  let content = match[3] ?? "";  // The rest of the text
-
-  // 2. Convert tabs to e.g. 4 spaces (or 2, or whatever you like)
-  leading = leading.replace(/\t/g, "    ");
-  const indentLength = leading.length;
-
-  // 3. Figure out if indentLength is in indentationLevels.
-  //    If not, insert it in ascending order.
+  if (!match) return null;
+  
+  const leading = match[1]?.replace(/\t/g, "    ") || "";
+  const bullet = match[2] || "";
+  const content = match[3]?.trim() || "";
+  const currentIndent = leading.length;
+  
   let level = 0;
-  let inserted = false;
-
-  for (let i = 0; i < indentationLevels.length; i++) {
-    const knownIndent = indentationLevels[i];
-    // If we find an exact match, we use that
-    if (knownIndent === indentLength) {
-      level = i;
-      inserted = true;
-      break;
+  
+  // Compare with previous indentation
+  if (currentIndent > prevIndent) {
+    // Child of previous line
+    level = lastLevel + 1;
+    levelIndents[level] = currentIndent;
+  } else if (currentIndent === prevIndent) {
+    // Sibling of previous line
+    level = lastLevel;
+  } else {
+    // Find the parent level by backtracking
+    for (level = lastLevel - 1; level >= 0; level--) {
+      if (levelIndents[level] === currentIndent) {
+        break; // Found the right level
+      } else if (levelIndents[level] < currentIndent) {
+        // We're between two known levels, use the parent
+        break;
+      }
     }
-    // If this indent is between two known values, insert it as a new level
-    if (knownIndent > indentLength) {
-      indentationLevels.splice(i, 0, indentLength);
-      level = i; // The new level is now i
-      inserted = true;
-      break;
-    }
+    // Ensure we don't go below 0
+    level = Math.max(0, level);
   }
-
-  // If it's bigger than all knownIndent, we push it to the end
-  if (!inserted) {
-    indentationLevels.push(indentLength);
-    level = indentationLevels.length - 1;
-  }
-
-  return { level, bullet, content: content.trim() };
+  
+  lastLevel = level;
+  return { level, bullet, content };
 }
 
 const nodes = [];
 const parents = [];
 
+let prevIndent = 0;
 for (const line of lines) {
   if (!line.trim()) continue; // skip empty
-
-  // get indent info
-  const info = getIndentLevel(line);
+  
+  const info = getIndentLevel(line, prevIndent);
   if (!info) {
     new Notice("Invalid line: " + line);
     continue;
   }
-
+  
+  // Update the previous indent for next iteration
+  prevIndent = line.match(/^(\s*)/)[0].replace(/\t/g, "    ").length;
+  
   // destructure info
   const { level, content } = info;
   const node = {
@@ -151,6 +147,7 @@ for (const line of lines) {
     parent: null,
     children: [],
   };
+  console.log('add node with level', level, 'and content', content);
 
   // If level > 0, attach to the parent's children
   if (level > 0 && parents[level - 1]) {
