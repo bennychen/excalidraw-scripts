@@ -29,6 +29,14 @@ const defaultSettings = {
   "Add dash bullet": {
     value: true,
     description: "If true, prepend a dash '-' to each bullet line in the outline."
+  },
+  "Horizontal spacing": {
+    value: 200,
+    description: "Horizontal distance between levels (from parent's right to child's left)"
+  },
+  "Vertical spacing": {
+    value: 100,
+    description: "Vertical spacing between sibling nodes"
   }
 };
 
@@ -76,7 +84,7 @@ function hasConnections(el) {
 if (
   selectedElements.length === 1 &&
   selectedElements[0].type === "text" &&
-  !hasConnections(selectedElements[0]) // we'll define hasConnections() below
+  !hasConnections(selectedElements[0])
 ) {
 
   // -----------------------------------------------------
@@ -209,8 +217,8 @@ if (
     const sourceTextHeight = originalTextEl.height;
 
     // Get spacing values from settings
-    const xSpacing = 200; // Horizontal distance between levels
-    const ySpacing = 100; // Vertical spacing between sibling nodes
+    const xSpacing = parseFloat(settings["Horizontal spacing"].value); // Horizontal distance between levels
+    const ySpacing = parseFloat(settings["Vertical spacing"].value);   // Vertical spacing between sibling nodes
 
     // Calculate the total height needed for the mindmap
     // First, count the number of leaf nodes (nodes without children)
