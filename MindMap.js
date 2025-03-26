@@ -90,7 +90,7 @@ if (
   // -----------------------------------------------------
   // Helper function: parse a bulleted text block (with indentation)
   // Returns an array of parsed nodes with relationships
-  function parseBulletedText(rawText) {
+  async function parseBulletedText(rawText) {
     const lines = rawText.split('\n');
     // Track the indentation of each level as we go
     const levelIndents = [0]; // Start with root level at 0 indentation
@@ -181,9 +181,43 @@ if (
 
     // If there are multiple root nodes, create a default "Root" node and make all roots its children
     if (rootNodes.length > 1) {
-      // Create a new root node
+      // Ask user for custom root node text
+      let rootNodeLabel = "Root"; // Default value
+      
+      try {
+        const userInput = await utils.inputPrompt(
+          "Multiple root nodes detected", // Header text
+          "Enter text for the root node", // Placeholder
+          "Root", // Default input value
+          [
+            {
+              caption: "Confirm",
+              action: (input) => {
+                // Return the input or default to "Root" if empty
+                return input || "Root";
+              },
+            },
+            {
+              caption: "Cancel",
+              action: () => {
+                // Use default value if canceled
+                return "Root";
+              },
+            },
+          ]
+        );
+        
+        if (userInput !== null && userInput !== "" && userInput !== undefined) {
+          rootNodeLabel = userInput;
+        }
+      } catch (error) {
+        console.error("Error with input prompt:", error);
+        // Fall back to default value
+      }
+      
+      // Create a new root node with user-provided label
       const defaultRootNode = {
-        label: "Root",
+        label: rootNodeLabel,
         level: 0,
         parent: null,
         children: [],
@@ -454,7 +488,7 @@ if (
   }
 
   // 2. Parse the bulleted text into a tree
-  const rootNodes = parseBulletedText(rawText);
+  const rootNodes = await parseBulletedText(rawText);
 
   if (!rootNodes || rootNodes.length === 0) {
     new Notice("No valid bullet lines found in the selected text block.");
