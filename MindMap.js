@@ -475,7 +475,7 @@ if (
     await ea.addElementsToView(false, false, true);
     new Notice("Created mindmap from bulleted text!");
   }
-
+  
   // The user presumably wants to convert a bulleted text block to a mindmap
   const textElement = selectedElements[0];
   
@@ -683,113 +683,180 @@ if (selectedElements.length === 1 &&
 
 // If more than one element is selected, perform the connection action
 
+// Filter out arrows and lines from selection
+const nonArrowElements = selectedElements.filter(el => el.type !== 'arrow' && el.type !== 'line');
+
+// Check if all selected elements are non-arrows
+const onlyNonArrowsSelected = nonArrowElements.length === selectedElements.length;
+
+// Skip the prompt if only non-arrows are selected
+let userAction = "connect";
+
+// Show the prompt only if there are arrows in the selection
+if (!onlyNonArrowsSelected) {
+  userAction = await utils.suggester(
+    ["Connect elements", "Select all arrows"], 
+    ["connect", "remove"],
+    "What do you want to do with the selected elements?"
+  );
+  
+  // Exit if the user cancels the action
+  if (userAction === null) {
+    return;
+  }
+}
+
+// Move these variable declarations outside the if block for accessibility
 const arrowStart = settings["Starting arrowhead"].value === "none" ? null : settings["Starting arrowhead"].value;
 const arrowEnd = settings["Ending arrowhead"].value === "none" ? null : settings["Ending arrowhead"].value;
 const linePoints = Math.floor(settings["Line points"].value);
 
-// Get selected elements, excluding arrows and lines
-selectedElements = selectedElements.filter(el => el.type !== 'arrow' && el.type !== 'line');
-
-// Copy selected elements to EA for editing
-ea.copyViewElementsToEAforEditing(selectedElements);
-
-// Apply line style from the first element
-ea.style.strokeColor = selectedElements[0].strokeColor;
-ea.style.strokeWidth = selectedElements[0].strokeWidth;
-ea.style.strokeStyle = selectedElements[0].strokeStyle;
-ea.style.strokeSharpness = selectedElements[0].strokeSharpness;
-
-// Set arrow options based on settings
+// Define arrow options at the global scope so it's accessible to all functions
 const arrowOptions = {
   startArrowHead: arrowStart,
   endArrowHead: arrowEnd,
   numberOfPoints: linePoints,
-  strokeColor: ea.style.strokeColor,
-  strokeWidth: ea.style.strokeWidth,
-  strokeStyle: ea.style.strokeStyle,
-  roughness: 0, // Adjust as needed
+  strokeColor: "#000000", // Default color, will be updated in connect action
+  strokeWidth: 1,         // Default width, will be updated in connect action
+  strokeStyle: "solid",   // Default style, will be updated in connect action
+  roughness: 0,           // Adjust as needed
 };
 
-// Class to represent a node in the tree
-class Node {
-  constructor(element) {
-    this.element = element;
-    this.parent = null;
-    this.children = [];
-  }
-}
+if (userAction === "connect") {
+  // Original connection logic
+  
+  // Get selected elements, excluding arrows and lines
+  selectedElements = selectedElements.filter(el => el.type !== 'arrow' && el.type !== 'line');
 
-// Create nodes from all selected elements
-let nodes = selectedElements.map(el => new Node(el));
+  // Copy selected elements to EA for editing
+  ea.copyViewElementsToEAforEditing(selectedElements);
 
-// Sort nodes by their leftmost x position
-nodes.sort((a, b) => a.element.x - b.element.x);
+  // Apply line style from the first element
+  ea.style.strokeColor = selectedElements[0].strokeColor;
+  ea.style.strokeWidth = selectedElements[0].strokeWidth;
+  ea.style.strokeStyle = selectedElements[0].strokeStyle;
+  ea.style.strokeSharpness = selectedElements[0].strokeSharpness;
 
-// Identify the root node (leftmost node)
-const rootNode = nodes[0];
+  // Update arrow options with current style
+  arrowOptions.strokeColor = ea.style.strokeColor;
+  arrowOptions.strokeWidth = ea.style.strokeWidth;
+  arrowOptions.strokeStyle = ea.style.strokeStyle;
 
-// Build the tree by assigning parents
-for (let i = 1; i < nodes.length; i++) {
-  const node = nodes[i];
-  const el = node.element;
-  const elLeftX = el.x;
-  const elRightX = el.x + el.width;
-  const elTopY = el.y;
-  const elBottomY = el.y + el.height;
-
-  // Find potential parents among nodes to the left
-  let potentialParents = [];
-  for (let j = 0; j < i; j++) {
-    const potentialParentNode = nodes[j];
-    const parentEl = potentialParentNode.element;
-    const parentRightX = parentEl.x + parentEl.width;
-
-    if (parentRightX < elLeftX) {
-      potentialParents.push(potentialParentNode);
+  // Class to represent a node in the tree
+  class Node {
+    constructor(element) {
+      this.element = element;
+      this.parent = null;
+      this.children = [];
     }
   }
 
-  // Filter to keep only column-adjacent nodes
-  const columnAdjacentNodes = potentialParents.filter(parentNode => {
-    const parentRightX = parentNode.element.x + parentNode.element.width;
+  // Create nodes from all selected elements
+  let nodes = selectedElements.map(el => new Node(el));
 
-    // Check if any other node is between this parent and current node
-    return !potentialParents.some(otherNode => {
-      if (otherNode === parentNode) return false;
-      const otherLeftX = otherNode.element.x;
-      const otherRightX = otherNode.element.x + otherNode.element.width;
-      return otherLeftX > parentRightX && otherRightX < elLeftX;
-    });
-  });
+  // Sort nodes by their leftmost x position
+  nodes.sort((a, b) => a.element.x - b.element.x);
 
-  // Find the parent with minimum y-gap
-  if (columnAdjacentNodes.length > 0) {
-    let closestParent = null;
-    let minYGap = Infinity;
+  // Identify the root node (leftmost node)
+  const rootNode = nodes[0];
 
-    for (let potentialParent of columnAdjacentNodes) {
-      const parentEl = potentialParent.element;
-      const parentCenterY = parentEl.y + parentEl.height / 2;
-      const elementCenterY = el.y + el.height / 2;
-      const yGap = Math.abs(elementCenterY - parentCenterY);
+  // Build the tree by assigning parents
+  for (let i = 1; i < nodes.length; i++) {
+    const node = nodes[i];
+    const el = node.element;
+    const elLeftX = el.x;
+    const elRightX = el.x + el.width;
+    const elTopY = el.y;
+    const elBottomY = el.y + el.height;
 
-      if (yGap < minYGap) {
-        minYGap = yGap;
-        closestParent = potentialParent;
+    // Find potential parents among nodes to the left
+    let potentialParents = [];
+    for (let j = 0; j < i; j++) {
+      const potentialParentNode = nodes[j];
+      const parentEl = potentialParentNode.element;
+      const parentRightX = parentEl.x + parentEl.width;
+
+      if (parentRightX < elLeftX) {
+        potentialParents.push(potentialParentNode);
       }
     }
 
-    // Assign parent and add child to parent's children
-    if (closestParent) {
-      node.parent = closestParent;
-      closestParent.children.push(node);
+    // Filter to keep only column-adjacent nodes
+    const columnAdjacentNodes = potentialParents.filter(parentNode => {
+      const parentRightX = parentNode.element.x + parentNode.element.width;
+
+      // Check if any other node is between this parent and current node
+      return !potentialParents.some(otherNode => {
+        if (otherNode === parentNode) return false;
+        const otherLeftX = otherNode.element.x;
+        const otherRightX = otherNode.element.x + otherNode.element.width;
+        return otherLeftX > parentRightX && otherRightX < elLeftX;
+      });
+    });
+
+    // Find the parent with minimum y-gap
+    if (columnAdjacentNodes.length > 0) {
+      let closestParent = null;
+      let minYGap = Infinity;
+
+      for (let potentialParent of columnAdjacentNodes) {
+        const parentEl = potentialParent.element;
+        const parentCenterY = parentEl.y + parentEl.height / 2;
+        const elementCenterY = el.y + el.height / 2;
+        const yGap = Math.abs(elementCenterY - parentCenterY);
+
+        if (yGap < minYGap) {
+          minYGap = yGap;
+          closestParent = potentialParent;
+        }
+      }
+
+      // Assign parent and add child to parent's children
+      if (closestParent) {
+        node.parent = closestParent;
+        closestParent.children.push(node);
+      }
+    } else {
+      // If no column-adjacent parents, assign root node as parent
+      if (node !== rootNode) {
+        node.parent = rootNode;
+        rootNode.children.push(node);
+      }
     }
+  }
+
+  // Start creating arrows from the root node
+  createArrows(rootNode);
+
+  // Finalize by adding elements to view
+  await ea.addElementsToView(false, false, true);
+  
+  new Notice("Connected elements with arrows.");
+} else if (userAction === "remove") {
+  // Find all arrows connected to the selected elements
+  const allElements = ea.getViewElements();
+  const selectedIds = selectedElements.map(el => el.id);
+  
+  // Find arrows connected to any of the selected elements
+  const arrowsToSelect = allElements.filter(el => {
+    if (el.type === 'arrow') {
+      const startId = el.startBinding ? el.startBinding.elementId : null;
+      const endId = el.endBinding ? el.endBinding.elementId : null;
+      
+      // Check if either end of the arrow is connected to a selected element
+      return (startId && selectedIds.includes(startId)) || 
+             (endId && selectedIds.includes(endId));
+    }
+    return false;
+  });
+  
+  if (arrowsToSelect.length > 0) {
+    // Select all the arrows using Excalidraw's API
+    ea.getExcalidrawAPI().selectElements(arrowsToSelect);
+    
+    new Notice(`Selected ${arrowsToSelect.length} arrows. Press Delete key to remove them.`);
   } else {
-    // If no column-adjacent parents, assign root node as parent
-    if (node !== rootNode) {
-      node.parent = rootNode;
-      rootNode.children.push(node);
-    }
+    new Notice("No arrows found connected to the selected elements.");
   }
 }
 
@@ -892,9 +959,3 @@ function createArrows(node) {
     }
   }
 }
-
-// Start creating arrows from the root node
-createArrows(rootNode);
-
-// Finalize by adding elements to view
-await ea.addElementsToView(false, false, true);
