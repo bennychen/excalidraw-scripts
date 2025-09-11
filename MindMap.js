@@ -343,23 +343,26 @@ if (
     ea.style.fontFamily=5;
 
     // Create a function for creating text elements with consistent settings
+    // Define shared text options once and reuse for measurement and final elements
+    const textOptions={
+      fontFamily: 5,
+      fontSize: 20,
+      textAlign: "center",
+      roughness: 2,
+      strokeWidth: 1,
+      strokeStyle: "solid",
+      strokeSharpness: "sharp",
+      backgroundColor: "transparent",
+      fillStyle: "solid",
+      strokeColor: "#000000",
+      opacity: 100,
+      handDrawn: true,
+      isHandDrawn: true
+    };
+
     function createTextElement ( x, y, text )
     {
-      return ea.addText( x, y, text, {
-        fontFamily: 5,
-        fontSize: 20,
-        textAlign: "center",
-        roughness: 2,
-        strokeWidth: 1,
-        strokeStyle: "solid",
-        strokeSharpness: "sharp",
-        backgroundColor: "transparent",
-        fillStyle: "solid",
-        strokeColor: "#000000",
-        opacity: 100,
-        handDrawn: true,
-        isHandDrawn: true
-      } );
+      return ea.addText( x, y, text, textOptions );
     }
 
     // Set arrow options based on settings
@@ -376,7 +379,8 @@ if (
     // First create temporary elements to calculate actual space needed
     function createTemporaryElements ( node )
     {
-      const elementId=ea.addText( node.x, node.y, node.label );
+      // Use the exact same text options as final elements for accurate measurement
+      const elementId=ea.addText( node.x, node.y, node.label, textOptions );
       node.element=ea.getElement( elementId );
 
       if ( node.children )
@@ -480,25 +484,11 @@ if (
       {
         if ( node.element&&child.element )
         {
-          const sourceEl=node.element; // Parent element
-          const targetEl=child.element; // Child element
+          const sourceEl=node.element;
+          const targetEl=child.element;
 
-          const sourceCenterX=sourceEl.x+sourceEl.width/2;
-          const sourceCenterY=sourceEl.y+sourceEl.height/2;
-
-          const targetCenterX=targetEl.x+targetEl.width/2;
-          const targetCenterY=targetEl.y+targetEl.height/2;
-
-          // Get edge points using the getEdgePoint function
-          const [ startX, startY ]=getEdgePoint( sourceEl, targetCenterX, targetCenterY );
-          const [ endX, endY ]=getEdgePoint( targetEl, sourceCenterX, sourceCenterY );
-
-          // Create the arrow with startObjectId and endObjectId
-          ea.addArrow( [ [ startX, startY ], [ endX, endY ] ], {
-            ...arrowOptions,
-            startObjectId: sourceEl.id,
-            endObjectId: targetEl.id,
-          } );
+          // Create a new bound arrow between source and target
+          addBoundArrowBetween( sourceEl, targetEl, arrowOptions );
         }
 
         // Recursively connect child's children
@@ -720,6 +710,19 @@ if ( selectedElements.length===1&&
         box.width+2*padding,
         box.height+2*padding
       );
+      // Ensure the box appears behind other grouped elements if API supports it
+      try {
+        if ( typeof ea.sendToBack==="function" ) {
+          ea.sendToBack( [ id ] );
+        } else {
+          const api=ea.getExcalidrawAPI?.();
+          if ( api&&typeof api.sendToBack==="function" ) {
+            api.sendToBack( [ id ] );
+          }
+        }
+      } catch ( _e ) {
+        // silently ignore if layering API not available
+      }
       ea.copyViewElementsToEAforEditing( elementsToGroup );
       ea.addToGroup( [ id ].concat( elementIdsToGroup ) );
     }
@@ -814,14 +817,105 @@ if ( userAction==="connect" )
   // Get selected elements, excluding arrows and lines
   selectedElements=selectedElements.filter( el => el.type!=='arrow'&&el.type!=='line' );
 
+  // Use only selected texts for connection logic when available
+  const selectedTexts=selectedElements.filter( el => el.type==='text' );
+  const elementsForConnect=selectedTexts.length>0? selectedTexts:selectedElements;
+
+  // Helper: absolute endpoint of arrow
+  function getArrowEndpointAbs ( arrow, atStart )
+  {
+    const idx=atStart? 0:arrow.points.length-1;
+    const p=arrow.points[ idx ];
+    return [ arrow.x+p[ 0 ], arrow.y+p[ 1 ] ];
+  }
+
+  // Helper: distance from point to rect of element
+  function pointToRectDistance ( px, py, el )
+  {
+    const rx0=el.x, ry0=el.y, rx1=el.x+el.width, ry1=el.y+el.height;
+    const dx=Math.max( rx0-px, 0, px-rx1 );
+    const dy=Math.max( ry0-py, 0, py-ry1 );
+    return Math.hypot( dx, dy );
+  }
+
+  // Helper: check if point is inside a text element's box
+  function pointInsideTextRect ( px, py, t )
+  {
+    return px>=t.x&&px<=t.x+t.width&&py>=t.y&&py<=t.y+t.height;
+  }
+  // Helper: return the selected text containing the point, else null
+  function findSelectedTextContainingPoint ( px, py, texts )
+  {
+    for ( const t of texts )
+    {
+      if ( pointInsideTextRect( px, py, t ) ) return t;
+    }
+    return null;
+  }
+
+  // Delete all existing arrows that connect between two selected texts only
+  async function deleteArrowsBetweenSelectedTexts ( texts )
+  {
+    if ( !texts||texts.length===0 ) return;
+    const allElements=ea.getViewElements();
+    const textIds=new Set( texts.map( t => t.id ) );
+    const arrows=allElements.filter( e => e.type==='arrow' );
+
+    const toDelete=[];
+    for ( const a of arrows )
+    {
+      const sId=a.startBinding?.elementId||null;
+      const eId=a.endBinding?.elementId||null;
+
+      // If bound to non-selected elements, skip deletion
+      if ( sId&&!
+        textIds.has( sId ) ) continue;
+      if ( eId&&!
+        textIds.has( eId ) ) continue;
+
+      let sText=null, eText=null;
+
+      if ( sId&&textIds.has( sId ) )
+      {
+        sText=texts.find( t => t.id===sId );
+      } else if ( !sId )
+      {
+        const [ sx, sy ]=getArrowEndpointAbs( a, true );
+        sText=findSelectedTextContainingPoint( sx, sy, texts );
+      }
+
+      if ( eId&&textIds.has( eId ) )
+      {
+        eText=texts.find( t => t.id===eId );
+      } else if ( !eId )
+      {
+        const [ ex, ey ]=getArrowEndpointAbs( a, false );
+        eText=findSelectedTextContainingPoint( ex, ey, texts );
+      }
+
+      if ( sText&&eText ) toDelete.push( a );
+    }
+
+    if ( toDelete.length===0 ) return;
+    ea.copyViewElementsToEAforEditing( toDelete );
+    for ( const a of toDelete )
+    {
+      const live=ea.getElement( a.id )||a;
+      if ( live ) live.isDeleted=true;
+    }
+    await ea.addElementsToView( false, false, true );
+  }
+
+  await deleteArrowsBetweenSelectedTexts( elementsForConnect );
+
   // Copy selected elements to EA for editing
-  ea.copyViewElementsToEAforEditing( selectedElements );
+  ea.copyViewElementsToEAforEditing( elementsForConnect );
 
   // Apply line style from the first element
-  ea.style.strokeColor=selectedElements[ 0 ].strokeColor;
-  ea.style.strokeWidth=selectedElements[ 0 ].strokeWidth;
-  ea.style.strokeStyle=selectedElements[ 0 ].strokeStyle;
-  ea.style.strokeSharpness=selectedElements[ 0 ].strokeSharpness;
+  ea.style.strokeColor=elementsForConnect[ 0 ].strokeColor;
+  ea.style.strokeWidth=elementsForConnect[ 0 ].strokeWidth;
+  ea.style.strokeStyle=elementsForConnect[ 0 ].strokeStyle;
+  ea.style.strokeSharpness=elementsForConnect[ 0 ].strokeSharpness;
 
   // Update arrow options with current style
   arrowOptions.strokeColor=ea.style.strokeColor;
@@ -840,7 +934,7 @@ if ( userAction==="connect" )
   }
 
   // Create nodes from all selected elements
-  let nodes=selectedElements.map( el => new Node( el ) );
+  let nodes=elementsForConnect.map( el => new Node( el ) );
 
   // Sort nodes by their leftmost x position
   nodes.sort( ( a, b ) => a.element.x-b.element.x );
@@ -1048,6 +1142,34 @@ function areElementsConnected ( sourceId, targetId )
   return false;
 }
 
+// Create a new arrow and force physical binding to source/target
+function addBoundArrowBetween ( sourceEl, targetEl, style )
+{
+  // Decide sides based on relative centers to keep anchors on edges
+  const sourceCenterX=sourceEl.x+sourceEl.width/2;
+  const sourceCenterY=sourceEl.y+sourceEl.height/2;
+  const targetCenterX=targetEl.x+targetEl.width/2;
+  const targetCenterY=targetEl.y+targetEl.height/2;
+
+  const dx=targetCenterX-sourceCenterX;
+  const dy=targetCenterY-sourceCenterY;
+  const useHorizontal=Math.abs( dx )>=Math.abs( dy );
+  const sourceSide=useHorizontal? ( dx>=0? "right":"left" ):( dy>=0? "bottom":"top" );
+  const targetSide=useHorizontal? ( dx>=0? "left":"right" ):( dy>=0? "top":"bottom" );
+
+  // Ensure connectObjects picks up the stroke formatting
+  if ( typeof style.strokeColor!=="undefined" ) ea.style.strokeColor=style.strokeColor;
+  if ( typeof style.strokeWidth!=="undefined" ) ea.style.strokeWidth=style.strokeWidth;
+  if ( typeof style.strokeStyle!=="undefined" ) ea.style.strokeStyle=style.strokeStyle;
+  if ( typeof style.roughness!=="undefined" ) ea.style.roughness=style.roughness;
+
+  ea.connectObjects( sourceEl.id, sourceSide, targetEl.id, targetSide, {
+    numberOfPoints: style.numberOfPoints,
+    startArrowHead: style.startArrowHead,
+    endArrowHead: style.endArrowHead,
+  } );
+}
+
 // Function to create arrows recursively
 function createArrows ( node )
 {
@@ -1063,19 +1185,10 @@ function createArrows ( node )
     const targetCenterX=targetEl.x+targetEl.width/2;
     const targetCenterY=targetEl.y+targetEl.height/2;
 
-    // Get edge points
-    const [ startX, startY ]=getEdgePoint( sourceEl, targetCenterX, targetCenterY );
-    const [ endX, endY ]=getEdgePoint( targetEl, sourceCenterX, sourceCenterY );
-
     // Check if the elements are already connected
     if ( !areElementsConnected( sourceEl.id, targetEl.id ) )
     {
-      // Create the arrow with startObjectId and endObjectId
-      ea.addArrow( [ [ startX, startY ], [ endX, endY ] ], {
-        ...arrowOptions,
-        startObjectId: sourceEl.id,
-        endObjectId: targetEl.id,
-      } );
+      addBoundArrowBetween( sourceEl, targetEl, arrowOptions );
     }
 
     // Recursively create arrows for the child's children
