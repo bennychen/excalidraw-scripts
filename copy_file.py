@@ -2,7 +2,7 @@ import os
 import shutil
 
 # Specify the target folder
-target_folder = r"..\\iCloudDrive\\iCloud~md~obsidian\\Codeplay\\Excalidraw\Scripts\\"
+target_folder = r"..\\Zero\\Excalidraw\Scripts\\"
 
 # Ensure the target folder exists
 if not os.path.exists(target_folder):
