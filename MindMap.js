@@ -1,267 +1,560 @@
 /*
 ```javascript
 */
-if ( !ea.verifyMinimumPluginVersion||!ea.verifyMinimumPluginVersion( "1.5.21" ) )
-{
-  new Notice( "This script requires a newer version of Excalidraw. Please install the latest version." );
+if (
+  !ea.verifyMinimumPluginVersion ||
+  !ea.verifyMinimumPluginVersion('1.5.21')
+) {
+  new Notice(
+    'This script requires a newer version of Excalidraw. Please install the latest version.'
+  );
   return;
 }
 
-settings=ea.getScriptSettings();
+settings = ea.getScriptSettings();
 
 // Define default settings
-const defaultSettings={
-  "Starting arrowhead": {
-    value: "none",
-    valueset: [ "none", "arrow", "triangle", "bar", "dot" ]
+const defaultSettings = {
+  'Starting arrowhead': {
+    value: 'none',
+    valueset: ['none', 'arrow', 'triangle', 'bar', 'dot'],
   },
-  "Ending arrowhead": {
-    value: "none",
-    valueset: [ "none", "arrow", "triangle", "bar", "dot" ]
+  'Ending arrowhead': {
+    value: 'none',
+    valueset: ['none', 'arrow', 'triangle', 'bar', 'dot'],
   },
-  "Line points": {
+  'Line points': {
     value: 0,
-    description: "Number of line points between start and end"
+    description: 'Number of line points between start and end',
   },
-  "Box selected": {
+  'Box selected': {
     value: false,
-    description: "Box selected mindmap elements"
+    description: 'Box selected mindmap elements',
   },
-  "Add dash bullet": {
+  'Add dash bullet': {
     value: true,
-    description: "If true, prepend a dash '-' to each bullet line in the outline."
+    description:
+      "If true, prepend a dash '-' to each bullet line in the outline.",
   },
-  "Horizontal spacing": {
+  'Horizontal spacing': {
     value: 200,
-    description: "Horizontal distance between levels (from parent's right to child's left)"
+    description:
+      "Horizontal distance between levels (from parent's right to child's left)",
   },
-  "Vertical spacing": {
+  'Vertical spacing': {
     value: 100,
-    description: "Vertical spacing between sibling nodes"
-  }
+    description: 'Vertical spacing between sibling nodes',
+  },
 };
 
 // Clear old unused settings
-for ( const key in settings )
-{
-  if ( !defaultSettings.hasOwnProperty( key ) )
-  {
-    delete settings[ key ];
+for (const key in settings) {
+  if (!defaultSettings.hasOwnProperty(key)) {
+    delete settings[key];
   }
 }
 
 // Check and set default values for each setting if not present
-for ( const key in defaultSettings )
-{
-  if ( !settings[ key ] )
-  {
-    settings[ key ]=defaultSettings[ key ];
+for (const key in defaultSettings) {
+  if (!settings[key]) {
+    settings[key] = defaultSettings[key];
   }
 }
 
-ea.setScriptSettings( settings );
+ea.setScriptSettings(settings);
+
+// -----------------------------------------------------
+// Key state tracker (CTRL/CMD gating for insert menu)
+// -----------------------------------------------------
+function ensureMindmapKeyTracker() {
+  if (window.__mindmapKeyTrackerInstalled) return;
+
+  window.__mindmapKeyState = window.__mindmapKeyState || {
+    ctrl: false,
+    meta: false,
+    shift: false,
+    alt: false,
+    lastCtrlOrMetaDownAt: 0,
+  };
+
+  const updateFromEvent = (e, isDown) => {
+    try {
+      if (e.key === 'Control') window.__mindmapKeyState.ctrl = isDown;
+      if (e.key === 'Meta') window.__mindmapKeyState.meta = isDown;
+      if (e.key === 'Shift') window.__mindmapKeyState.shift = isDown;
+      if (e.key === 'Alt') window.__mindmapKeyState.alt = isDown;
+
+      // Some environments only reliably expose modifier flags:
+      if (typeof e.ctrlKey === 'boolean')
+        window.__mindmapKeyState.ctrl = e.ctrlKey;
+      if (typeof e.metaKey === 'boolean')
+        window.__mindmapKeyState.meta = e.metaKey;
+      if (typeof e.shiftKey === 'boolean')
+        window.__mindmapKeyState.shift = e.shiftKey;
+      if (typeof e.altKey === 'boolean')
+        window.__mindmapKeyState.alt = e.altKey;
+
+      if (
+        isDown &&
+        (window.__mindmapKeyState.ctrl || window.__mindmapKeyState.meta)
+      ) {
+        window.__mindmapKeyState.lastCtrlOrMetaDownAt = Date.now();
+      }
+    } catch (_e) {
+      // ignore
+    }
+  };
+
+  const onKeyDown = e => updateFromEvent(e, true);
+  const onKeyUp = e => updateFromEvent(e, false);
+  const onBlur = () => {
+    window.__mindmapKeyState.ctrl = false;
+    window.__mindmapKeyState.meta = false;
+    window.__mindmapKeyState.shift = false;
+    window.__mindmapKeyState.alt = false;
+  };
+
+  // Capture on both document + window to maximize chances in Obsidian/Excalidraw
+  window.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('keyup', onKeyUp, true);
+  window.addEventListener('blur', onBlur, true);
+
+  document.addEventListener('keydown', onKeyDown, true);
+  document.addEventListener('keyup', onKeyUp, true);
+
+  window.__mindmapKeyTrackerInstalled = true;
+}
+
+function isCtrlOrCmdPressed() {
+  ensureMindmapKeyTracker();
+
+  // 1) Use live tracked state
+  const st = window.__mindmapKeyState;
+  const live = !!(st && (st.ctrl || st.meta));
+  if (live) return true;
+
+  // 2) If user pressed Ctrl/Cmd very recently (covers “Ctrl+click then run script” workflows)
+  // Keep window short to avoid accidental triggers.
+  const RECENT_MS = 700;
+  if (
+    st &&
+    st.lastCtrlOrMetaDownAt &&
+    Date.now() - st.lastCtrlOrMetaDownAt <= RECENT_MS
+  ) {
+    return true;
+  }
+
+  // 3) Fallback: sometimes the triggering event is available as window.event
+  try {
+    const ev = window.event;
+    if (ev && (ev.ctrlKey || ev.metaKey)) return true;
+  } catch (_e) {}
+
+  return false;
+}
 
 // Get selected elements
-let selectedElements=ea.getViewSelectedElements();
+let selectedElements = ea.getViewSelectedElements();
 
 // Check if any elements are selected
-if ( selectedElements.length===0 )
-{
-  new Notice( "No objects selected. Please select at least one object to connect or select." );
+if (selectedElements.length === 0) {
+  new Notice(
+    'No objects selected. Please select at least one object to connect or select.'
+  );
   return;
 }
 
 // -----------------------------------------------------
-// Helper function: check if an element has any line/arrow connections
-function hasConnections ( el )
-{
-  // You can do a quick check in the current canvas:
-  const allElements=ea.getViewElements();
-  const linesOrArrows=allElements.filter( e => e.type==="line"||e.type==="arrow" );
-  for ( let la of linesOrArrows )
-  {
-    // check if it references `el.id`
-    if ( ( la.startBinding?.elementId===el.id )||( la.endBinding?.elementId===el.id ) )
-    {
-      return true;
+// Snapshot + adjacency maps (Fix #2)
+// -----------------------------------------------------
+function snapshotCanvas() {
+  const elements = ea.getViewElements();
+  const byId = new Map();
+  const arrows = [];
+  const connectors = []; // arrows + lines (for hasConnections)
+
+  const outgoingArrows = new Map(); // elementId -> arrow[]
+  const incomingArrows = new Map(); // elementId -> arrow[]
+  const outgoingConnectors = new Map(); // elementId -> (arrow|line)[]
+  const incomingConnectors = new Map();
+
+  // For fast edge-existence check (bound start->end only)
+  const boundArrowPairs = new Set(); // "startId->endId"
+
+  const pushMapList = (map, key, val) => {
+    let arr = map.get(key);
+    if (!arr) {
+      arr = [];
+      map.set(key, arr);
+    }
+    arr.push(val);
+  };
+
+  for (const el of elements) {
+    byId.set(el.id, el);
+    if (el.type === 'arrow') arrows.push(el);
+    if (el.type === 'arrow' || el.type === 'line') connectors.push(el);
+  }
+
+  for (const c of connectors) {
+    const sId = c.startBinding?.elementId || null;
+    const eId = c.endBinding?.elementId || null;
+
+    if (sId) pushMapList(outgoingConnectors, sId, c);
+    if (eId) pushMapList(incomingConnectors, eId, c);
+
+    if (c.type === 'arrow') {
+      if (sId) pushMapList(outgoingArrows, sId, c);
+      if (eId) pushMapList(incomingArrows, eId, c);
+      if (sId && eId) boundArrowPairs.add(`${sId}->${eId}`);
     }
   }
-  return false;
+
+  return {
+    elements,
+    byId,
+    arrows,
+    connectors,
+    outgoingArrows,
+    incomingArrows,
+    outgoingConnectors,
+    incomingConnectors,
+    boundArrowPairs,
+  };
 }
 
-// A. Detect the "Single Text Block, No Connections" scenario
-if (
-  selectedElements.length===1&&
-  selectedElements[ 0 ].type==="text"&&
-  !hasConnections( selectedElements[ 0 ] )
-)
-{
+// Build one snapshot up-front for early checks
+let snapshot = snapshotCanvas();
 
-  // -----------------------------------------------------
-  // Helper function: parse a bulleted text block (with indentation)
-  // Returns an array of parsed nodes with relationships
-  async function parseBulletedText ( rawText )
-  {
-    const lines=rawText.split( '\n' );
-    // Track the indentation of each level as we go
-    const levelIndents=[ 0 ]; // Start with root level at 0 indentation
-    let lastLevel=0;
-    let prevIndent=0;
+// -----------------------------------------------------
+// Helper: check if an element has any line/arrow connections (Fix #2)
+// -----------------------------------------------------
+function hasConnections(el, snap) {
+  return (
+    (snap.outgoingConnectors.get(el.id)?.length || 0) > 0 ||
+    (snap.incomingConnectors.get(el.id)?.length || 0) > 0
+  );
+}
 
-    // Parse each line and build a hierarchical structure
-    const nodes=[];
-    const parents=[];
+// -----------------------------------------------------
+// Insert child/sibling helpers
+// -----------------------------------------------------
+function getRightChildren(parentEl, snap) {
+  const outgoing = snap.outgoingArrows.get(parentEl.id) || [];
+  const children = [];
+  for (const a of outgoing) {
+    const childId = a.endBinding?.elementId;
+    if (!childId) continue;
+    const childEl = snap.byId.get(childId);
+    if (!childEl) continue;
+    if (childEl.x > parentEl.x) children.push(childEl);
+  }
+  children.sort((a, b) => a.y - b.y);
+  return children;
+}
 
-    // Helper function to determine the indentation level
-    function getIndentLevel ( line, prevIndent )
-    {
-      // Extract leading whitespace
-      const match=line.match( /^(\s*)([-*+]?)(.*)$/ );
-      if ( !match ) return null;
+function getParentFromLeft(childEl, snap) {
+  const incoming = snap.incomingArrows.get(childEl.id) || [];
+  const candidates = [];
+  for (const a of incoming) {
+    const pId = a.startBinding?.elementId;
+    if (!pId) continue;
+    const pEl = snap.byId.get(pId);
+    if (!pEl) continue;
+    if (pEl.x < childEl.x) candidates.push(pEl);
+  }
+  if (candidates.length === 0) return null;
+  // Choose the closest parent on the left (max x)
+  candidates.sort((a, b) => b.x - a.x);
+  return candidates[0];
+}
 
-      const leading=match[ 1 ]?.replace( /\t/g, "    " )||"";
-      const bullet=match[ 2 ]||"";
-      const content=match[ 3 ]?.trim()||"";
-      const currentIndent=leading.length;
+function normalizeArrowHead(v) {
+  if (v === undefined || v === null) return null;
+  if (typeof v === 'string' && v.toLowerCase() === 'none') return null;
+  return v;
+}
 
-      let level=0;
+function makeArrowOptionsFromSource(sourceEl) {
+  return {
+    startArrowHead: normalizeArrowHead(
+      settings['Starting arrowhead'].value === 'none'
+        ? null
+        : settings['Starting arrowhead'].value
+    ),
+    endArrowHead: normalizeArrowHead(
+      settings['Ending arrowhead'].value === 'none'
+        ? null
+        : settings['Ending arrowhead'].value
+    ),
+    numberOfPoints: Math.floor(settings['Line points'].value) || 0,
+    strokeColor: sourceEl?.strokeColor ?? '#000000',
+    strokeWidth: sourceEl?.strokeWidth ?? 1,
+    strokeStyle: sourceEl?.strokeStyle ?? 'solid',
+    strokeSharpness: sourceEl?.strokeSharpness ?? 'sharp',
+    roughness: sourceEl?.roughness ?? 0,
+  };
+}
 
-      // Compare with previous indentation
-      if ( currentIndent>prevIndent )
-      {
-        // Child of previous line
-        level=lastLevel+1;
-        levelIndents[ level ]=currentIndent;
-      } else if ( currentIndent===prevIndent )
-      {
-        // Sibling of previous line
-        level=lastLevel;
-      } else
-      {
-        // Find the parent level by backtracking
-        for ( level=lastLevel-1;level>=0;level-- )
-        {
-          if ( levelIndents[ level ]===currentIndent )
-          {
-            break; // Found the right level
-          } else if ( levelIndents[ level ]<currentIndent )
-          {
-            // We're between two known levels, use the parent
-            break;
-          }
-        }
-        // Ensure we don't go below 0
-        level=Math.max( 0, level );
-      }
+function makeTextOptionsFromSource(sourceEl) {
+  // Keep it conservative: reuse core properties commonly present on Excalidraw text elements.
+  // (Your earlier addText usage accepts extra fields in your environment; we keep them.)
+  return {
+    fontFamily: sourceEl?.fontFamily ?? 5,
+    fontSize: sourceEl?.fontSize ?? 20,
+    textAlign: sourceEl?.textAlign ?? 'center',
+    roughness: sourceEl?.roughness ?? 2,
+    strokeWidth: sourceEl?.strokeWidth ?? 1,
+    strokeStyle: sourceEl?.strokeStyle ?? 'solid',
+    strokeSharpness: sourceEl?.strokeSharpness ?? 'sharp',
+    backgroundColor: sourceEl?.backgroundColor ?? 'transparent',
+    fillStyle: sourceEl?.fillStyle ?? 'solid',
+    strokeColor: sourceEl?.strokeColor ?? '#000000',
+    opacity: sourceEl?.opacity ?? 100,
+    handDrawn: sourceEl?.handDrawn ?? true,
+    isHandDrawn: sourceEl?.isHandDrawn ?? true,
+  };
+}
 
-      lastLevel=level;
-      return { level, bullet, content };
+async function insertChildOrSiblingFlow(selectedEl, snap) {
+  const choice = await utils.suggester(
+    ['Add child', 'Add sibling', 'Run default outline'],
+    ['child', 'sibling', 'outline'],
+    'CTRL/CMD held: quick action'
+  );
+  if (choice === null) return { didInsert: false, forceOutline: false };
+  if (choice === 'outline') return { didInsert: false, forceOutline: true };
+
+  const label = await utils.inputPrompt(
+    choice === 'child' ? 'Add child node' : 'Add sibling node',
+    'Enter node text',
+    '',
+    [
+      { caption: 'Confirm', action: input => (input || '').trim() },
+      { caption: 'Cancel', action: () => null },
+    ]
+  );
+
+  if (label === null || label === undefined || label === '') {
+    return { didInsert: true, forceOutline: false }; // user canceled; treat as handled
+  }
+
+  const xSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
+  const ySpacing = parseFloat(settings['Vertical spacing'].value) || 100;
+
+  // Decide source (arrow from) and parent for placement rules
+  let sourceEl = null; // arrow start
+  let parentEl = null; // for sibling placement
+  let newX = 0;
+  let newY = 0;
+
+  if (choice === 'child') {
+    sourceEl = selectedEl;
+
+    const existingChildren = getRightChildren(selectedEl, snap);
+    if (existingChildren.length > 0) {
+      // Align to existing child column; add below last child
+      newX = existingChildren[0].x;
+      newY = existingChildren[existingChildren.length - 1].y + ySpacing;
+    } else {
+      // First child: to the right of the selected element
+      newX = selectedEl.x + selectedEl.width + xSpacing;
+      newY = selectedEl.y;
+    }
+  } else {
+    // sibling
+    parentEl = getParentFromLeft(selectedEl, snap);
+    if (!parentEl) {
+      new Notice(
+        'No parent found (selected looks like the root). Use "Add child" instead.'
+      );
+      return { didInsert: true, forceOutline: false };
     }
 
-    for ( const line of lines )
-    {
-      if ( !line.trim() ) continue; // skip empty
+    sourceEl = parentEl;
 
-      const info=getIndentLevel( line, prevIndent );
-      if ( !info )
-      {
-        new Notice( "Invalid line: "+line );
-        continue;
+    const siblings = getRightChildren(parentEl, snap);
+    if (siblings.length > 0) {
+      // Prefer same column as existing siblings; add below last sibling
+      newX = siblings[0].x;
+      newY = siblings[siblings.length - 1].y + ySpacing;
+    } else {
+      // Fallback: place to the right of parent
+      newX = parentEl.x + parentEl.width + xSpacing;
+      newY = parentEl.y;
+    }
+  }
+
+  // IMPORTANT for reliable connections:
+  // connectObjects() operates on elements inside EA "editing" context.
+  // So we MUST copy the source element from the view into EA for editing first,
+  // then create the new text in EA, then connect them.
+  try {
+    ea.copyViewElementsToEAforEditing([sourceEl]);
+  } catch (_e) {
+    // If this fails, we still proceed; some builds allow connecting by ids directly.
+  }
+
+  // Styling
+  const textOptions = makeTextOptionsFromSource(selectedEl);
+  const arrowOptions = makeArrowOptionsFromSource(sourceEl, snap);
+
+  // Create node
+  const newId = ea.addText(newX, newY, label, textOptions);
+  const newEl = ea.getElement(newId);
+
+  // Create connection (source -> new)
+  if (newEl) {
+    addBoundArrowBetween(sourceEl, newEl, arrowOptions);
+  } else {
+    // Fallback: if EA didn't give us the element object, try connecting by ids only
+    try {
+      ea.connectObjects(sourceEl.id, 'right', newId, 'left', {
+        numberOfPoints: arrowOptions.numberOfPoints,
+        startArrowHead: arrowOptions.startArrowHead,
+        endArrowHead: arrowOptions.endArrowHead,
+        padding: 0,
+      });
+    } catch (_e) {}
+  }
+
+  await ea.addElementsToView(false, false, true);
+  new Notice(choice === 'child' ? 'Added child node.' : 'Added sibling node.');
+
+  return { didInsert: true, forceOutline: false };
+}
+
+// -----------------------------------------------------
+// A. Detect the "Single Text Block, No Connections" scenario
+// -----------------------------------------------------
+if (
+  selectedElements.length === 1 &&
+  selectedElements[0].type === 'text' &&
+  !hasConnections(selectedElements[0], snapshot)
+) {
+  // -----------------------------------------------------
+  // Helper function: parse a bulleted text block (with indentation)
+  // Robust indent-stack approach (Fix #3)
+  async function parseBulletedText(rawText) {
+    const lines = rawText.split('\n');
+
+    const nodes = [];
+    const indentStack = [0]; // indentation values
+    const nodeStack = []; // last node at each level
+
+    // Normalize tabs (Obsidian commonly uses tabs in lists)
+    const normalizeIndent = ws => (ws || '').replace(/\t/g, '    ').length;
+
+    // Accept -,*,+, 1. style, or even no bullet (we treat indentation as the hierarchy source)
+    const parseLine = line => {
+      const match = line.match(/^(\s*)(?:([-*+])|(\d+\.))?\s*(.*)$/);
+      if (!match) return null;
+      const leadingWs = match[1] || '';
+      const content = (match[4] || '').trim();
+      if (!content) return null;
+      const indent = normalizeIndent(leadingWs);
+      return { indent, content };
+    };
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      const info = parseLine(line);
+      if (!info) continue;
+
+      const { indent, content } = info;
+
+      // Reduce stack until it can accept this indent
+      while (
+        indent < indentStack[indentStack.length - 1] &&
+        indentStack.length > 1
+      ) {
+        indentStack.pop();
+        nodeStack.pop();
       }
 
-      // Update the previous indent for next iteration
-      prevIndent=line.match( /^(\s*)/ )[ 0 ].replace( /\t/g, "    " ).length;
+      // If indent is deeper than current level, push a new level
+      if (indent > indentStack[indentStack.length - 1]) {
+        indentStack.push(indent);
+      }
 
-      // destructure info
-      const { level, content }=info;
-      const node={
+      const level = indentStack.length - 1;
+
+      const node = {
         label: content,
         level,
         parent: null,
         children: [],
+        element: null,
+        x: 0,
+        y: 0,
       };
 
-      // If level > 0, attach to the parent's children
-      if ( level>0&&parents[ level-1 ] )
-      {
-        node.parent=parents[ level-1 ];
-        parents[ level-1 ].children.push( node );
+      if (level > 0 && nodeStack[level - 1]) {
+        node.parent = nodeStack[level - 1];
+        nodeStack[level - 1].children.push(node);
       }
 
-      // Keep track of parents at each level
-      parents[ level ]=node;
+      nodeStack[level] = node;
+      nodeStack.length = level + 1;
 
-      // Remove deeper-level parents if we just stepped back in indentation
-      parents.length=level+1;
-
-      nodes.push( node );
+      nodes.push(node);
     }
 
     // Identify root nodes
-    const rootNodes=nodes.filter( node => !node.parent );
+    let rootNodes = nodes.filter(n => !n.parent);
 
-    // If there are multiple root nodes, create a default "Root" node and make all roots its children
-    if ( rootNodes.length>1 )
-    {
-      // Ask user for custom root node text
-      let rootNodeLabel="Root"; // Default value
+    // If multiple roots, wrap them
+    if (rootNodes.length > 1) {
+      let rootNodeLabel = 'Root';
 
-      try
-      {
-        const userInput=await utils.inputPrompt(
-          "Multiple root nodes detected", // Header text
-          "Enter text for the root node", // Placeholder
-          "Root", // Default input value
+      try {
+        const userInput = await utils.inputPrompt(
+          'Multiple root nodes detected',
+          'Enter text for the root node',
+          'Root',
           [
             {
-              caption: "Confirm",
-              action: ( input ) =>
-              {
-                // Return the input or default to "Root" if empty
-                return input||"Root";
-              },
+              caption: 'Confirm',
+              action: input => input || 'Root',
             },
             {
-              caption: "Cancel",
-              action: () =>
-              {
-                // Use default value if canceled
-                return "Root";
-              },
+              caption: 'Cancel',
+              action: () => 'Root',
             },
           ]
         );
 
-        if ( userInput!==null&&userInput!==""&&userInput!==undefined )
-        {
-          rootNodeLabel=userInput;
+        if (userInput !== null && userInput !== '' && userInput !== undefined) {
+          rootNodeLabel = userInput;
         }
-      } catch ( error )
-      {
-        console.error( "Error with input prompt:", error );
-        // Fall back to default value
+      } catch (error) {
+        console.error('Error with input prompt:', error);
       }
 
-      // Create a new root node with user-provided label
-      const defaultRootNode={
+      const defaultRootNode = {
         label: rootNodeLabel,
         level: 0,
         parent: null,
         children: [],
+        element: null,
+        x: 0,
+        y: 0,
       };
 
-      // Make all original root nodes children of the new root
-      for ( const originalRoot of rootNodes )
-      {
-        originalRoot.parent=defaultRootNode;
-        defaultRootNode.children.push( originalRoot );
-        originalRoot.level=1; // Update level since it's now a child
+      for (const originalRoot of rootNodes) {
+        originalRoot.parent = defaultRootNode;
+        defaultRootNode.children.push(originalRoot);
       }
 
-      // Add the new root node to the nodes array
-      nodes.push( defaultRootNode );
+      // Normalize levels after wrapping (optional but keeps data consistent)
+      const relabelLevels = (n, lvl) => {
+        n.level = lvl;
+        for (const c of n.children || []) relabelLevels(c, lvl + 1);
+      };
+      relabelLevels(defaultRootNode, 0);
 
-      return [ defaultRootNode ]; // Return only the new default root
+      return [defaultRootNode];
     }
 
     return rootNodes;
@@ -269,932 +562,719 @@ if (
 
   // -----------------------------------------------------
   // Helper function: build a mindmap (left->right) from a bullet node
-  // We place shapes with x offset = 200 * depth, sibling spacing = 100px
-  // Lines have no arrowheads
-  async function buildMindmapFromBullets ( rootNode, originalTextEl )
-  {
+  async function buildMindmapFromBullets(rootNode, originalTextEl) {
     // Store the source text element's position and dimensions
-    const sourceTextX=originalTextEl.x;
-    const sourceTextY=originalTextEl.y;
-    const sourceTextWidth=originalTextEl.width;
-    const sourceTextHeight=originalTextEl.height;
+    const sourceTextX = originalTextEl.x;
+    const sourceTextY = originalTextEl.y;
+    const sourceTextWidth = originalTextEl.width;
+    const sourceTextHeight = originalTextEl.height;
 
     // Get spacing values from settings
-    const xSpacing=parseFloat( settings[ "Horizontal spacing" ].value ); // Horizontal distance between levels
-    const ySpacing=parseFloat( settings[ "Vertical spacing" ].value );   // Vertical spacing between sibling nodes
+    const xSpacing = parseFloat(settings['Horizontal spacing'].value);
+    const ySpacing = parseFloat(settings['Vertical spacing'].value);
 
-    // Calculate the total height needed for the mindmap
-    // First, count the number of leaf nodes (nodes without children)
-    const countLeafNodes=( node ) =>
-    {
-      if ( !node.children||node.children.length===0 )
-      {
-        return 1;
-      }
-      return node.children.reduce( ( sum, child ) => sum+countLeafNodes( child ), 0 );
+    // Calculate total height based on leaf nodes
+    const countLeafNodes = node => {
+      if (!node.children || node.children.length === 0) return 1;
+      return node.children.reduce(
+        (sum, child) => sum + countLeafNodes(child),
+        0
+      );
     };
 
-    const leafNodeCount=countLeafNodes( rootNode );
+    const leafNodeCount = countLeafNodes(rootNode);
+    const estimatedTotalHeight = (leafNodeCount - 1) * ySpacing;
+    const sourceTextCenter = sourceTextY + sourceTextHeight / 2;
+    let nextY = sourceTextCenter - estimatedTotalHeight / 2;
 
-    // Calculate estimated total height based on leaf nodes and spacing
-    const estimatedTotalHeight=( leafNodeCount-1 )*ySpacing;
+    function assignInitialPositions(node, level, x) {
+      node.x = x;
 
-    // Calculate source text vertical center
-    const sourceTextCenter=sourceTextY+sourceTextHeight/2;
-
-    // Initialize nextY to start from a position that will center the mindmap
-    let nextY=sourceTextCenter-( estimatedTotalHeight/2 );
-
-    // Function to assign initial positions - first pass
-    function assignInitialPositions ( node, level, x )
-    {
-      node.x=x;
-
-      if ( !node.children||node.children.length===0 )
-      {
-        // Leaf node
-        node.y=nextY;
-        nextY+=ySpacing;
-      } else
-      {
-        // Process children first
-        for ( let child of node.children )
-        {
-          assignInitialPositions( child, level+1, x+xSpacing );
+      if (!node.children || node.children.length === 0) {
+        node.y = nextY;
+        nextY += ySpacing;
+      } else {
+        for (let child of node.children) {
+          assignInitialPositions(child, level + 1, x + xSpacing);
         }
-        // After processing children, set y position as average of children's y positions
-        const firstChildY=node.children[ 0 ].y;
-        const lastChildY=node.children[ node.children.length-1 ].y;
-        node.y=( firstChildY+lastChildY )/2;
+        const firstChildY = node.children[0].y;
+        const lastChildY = node.children[node.children.length - 1].y;
+        node.y = (firstChildY + lastChildY) / 2;
       }
     }
 
-    // Starting x position for root node - position right after the source text element
-    const rootX=sourceTextX+sourceTextWidth+20; // 20px gap between source and mindmap
+    const rootX = sourceTextX + sourceTextWidth + 20;
+    assignInitialPositions(rootNode, 0, rootX);
 
-    // Assign initial positions
-    assignInitialPositions( rootNode, 0, rootX );
+    ea.style.strokeColor = '#000000';
+    ea.style.strokeWidth = 1;
+    ea.style.strokeStyle = 'solid';
+    ea.style.strokeSharpness = 'sharp';
+    ea.style.fontFamily = 5;
 
-    // Apply style from the first node
-    ea.style.strokeColor="#000000"; // Default to black
-    ea.style.strokeWidth=1;
-    ea.style.strokeStyle="solid";
-    ea.style.strokeSharpness="sharp";
-    ea.style.fontFamily=5;
-
-    // Create a function for creating text elements with consistent settings
-    // Define shared text options once and reuse for measurement and final elements
-    const textOptions={
+    const textOptions = {
       fontFamily: 5,
       fontSize: 20,
-      textAlign: "center",
+      textAlign: 'center',
       roughness: 2,
       strokeWidth: 1,
-      strokeStyle: "solid",
-      strokeSharpness: "sharp",
-      backgroundColor: "transparent",
-      fillStyle: "solid",
-      strokeColor: "#000000",
+      strokeStyle: 'solid',
+      strokeSharpness: 'sharp',
+      backgroundColor: 'transparent',
+      fillStyle: 'solid',
+      strokeColor: '#000000',
       opacity: 100,
       handDrawn: true,
-      isHandDrawn: true
+      isHandDrawn: true,
     };
 
-    function createTextElement ( x, y, text )
-    {
-      return ea.addText( x, y, text, textOptions );
+    function createTextElement(x, y, text) {
+      return ea.addText(x, y, text, textOptions);
     }
 
-    // Set arrow options based on settings
-    const arrowOptions={
-      startArrowHead: settings[ "Starting arrowhead" ].value==="none"? null:settings[ "Starting arrowhead" ].value,
-      endArrowHead: settings[ "Ending arrowhead" ].value==="none"? null:settings[ "Ending arrowhead" ].value,
-      numberOfPoints: Math.floor( settings[ "Line points" ].value ),
+    const arrowOptions = {
+      startArrowHead:
+        settings['Starting arrowhead'].value === 'none'
+          ? null
+          : settings['Starting arrowhead'].value,
+      endArrowHead:
+        settings['Ending arrowhead'].value === 'none'
+          ? null
+          : settings['Ending arrowhead'].value,
+      numberOfPoints: Math.floor(settings['Line points'].value),
       strokeColor: ea.style.strokeColor,
       strokeWidth: ea.style.strokeWidth,
       strokeStyle: ea.style.strokeStyle,
-      roughness: 2, // Add roughness for hand-drawn appearance
+      roughness: 2,
     };
 
-    // First create temporary elements to calculate actual space needed
-    function createTemporaryElements ( node )
-    {
-      // Use the exact same text options as final elements for accurate measurement
-      const elementId=ea.addText( node.x, node.y, node.label, textOptions );
-      node.element=ea.getElement( elementId );
-
-      if ( node.children )
-      {
-        for ( const child of node.children )
-        {
-          createTemporaryElements( child );
-        }
+    // Create temporary elements for measurement
+    function createTemporaryElements(node) {
+      const elementId = ea.addText(node.x, node.y, node.label, textOptions);
+      node.element = ea.getElement(elementId);
+      if (node.children) {
+        for (const child of node.children) createTemporaryElements(child);
       }
     }
 
-    createTemporaryElements( rootNode );
+    createTemporaryElements(rootNode);
 
-    // Adjust positions based on actual element widths
-    function adjustPositions ( node )
-    {
-      if ( !node.children||node.children.length===0 )
-      {
-        return; // No adjustments needed for leaf nodes
-      }
+    // Adjust child x positions based on actual widths
+    function adjustPositions(node) {
+      if (!node.children || node.children.length === 0) return;
 
-      // Calculate the parent's right edge
-      const parentRightEdge=node.x+node.element.width;
+      const parentRightEdge = node.x + node.element.width;
 
-      // Adjust positions of children
-      for ( let child of node.children )
-      {
-        // Move the child to be xSpacing distance from parent's right edge
-        child.element.x=parentRightEdge+xSpacing;
-        child.x=child.element.x; // Update node's x to match element
-
-        // Recursively adjust the children of this child
-        adjustPositions( child );
+      for (let child of node.children) {
+        child.element.x = parentRightEdge + xSpacing;
+        child.x = child.element.x;
+        adjustPositions(child);
       }
     }
 
-    // Adjust positions
-    adjustPositions( rootNode );
+    adjustPositions(rootNode);
 
-    // Store positions and prepare for final elements
-    const nodePositions=[];
-    function collectNodePositions ( node )
-    {
-      nodePositions.push( {
+    // Collect positions + old ids
+    const nodePositions = [];
+    function collectNodePositions(node) {
+      nodePositions.push({
         id: node.element.id,
         x: node.x,
         y: node.y,
         text: node.label,
-        node: node
-      } );
+        node,
+      });
+      if (node.children) {
+        for (const child of node.children) collectNodePositions(child);
+      }
+    }
+    collectNodePositions(rootNode);
+    const oldElementIds = nodePositions.map(item => item.id);
 
-      if ( node.children )
-      {
-        for ( const child of node.children )
-        {
-          collectNodePositions( child );
+    // Clear references and create final elements
+    function clearElementReferences(node) {
+      node.element = null;
+      if (node.children)
+        for (const child of node.children) clearElementReferences(child);
+    }
+    clearElementReferences(rootNode);
+
+    for (const item of nodePositions) {
+      const elementId = createTextElement(item.x, item.y, item.text);
+      const element = ea.getElement(elementId);
+      item.node.element = element;
+    }
+
+    // Connect
+    function connectWithArrows(node) {
+      if (!node.children || node.children.length === 0) return;
+      for (const child of node.children) {
+        if (node.element && child.element) {
+          addBoundArrowBetween(node.element, child.element, arrowOptions);
         }
+        connectWithArrows(child);
       }
     }
+    connectWithArrows(rootNode);
 
-    collectNodePositions( rootNode );
+    // Delete temporary elements
+    try {
+      for (const elementId of oldElementIds) {
+        const element = ea.getElement(elementId);
+        if (element) element.isDeleted = true;
+      }
+    } catch (e) {
+      console.log('Error deleting elements:', e);
+    }
 
-    // Store the old element IDs for deletion
-    const oldElementIds=nodePositions.map( item => item.id );
-
-    // Clear out old element references
-    function clearElementReferences ( node )
-    {
-      node.element=null;
-      if ( node.children )
-      {
-        for ( const child of node.children )
-        {
-          clearElementReferences( child );
+    // Remove the original text block (best-effort: keep your original call, but safe fallback)
+    try {
+      ea.copyViewElementsToEAforEditing([]);
+      ea.deleteViewElements([originalTextEl.id]);
+    } catch (_e) {
+      // fallback (mark deleted)
+      try {
+        const live = ea.getElement(originalTextEl.id) || originalTextEl;
+        if (live) {
+          ea.copyViewElementsToEAforEditing([live]);
+          live.isDeleted = true;
         }
+      } catch (__e) {
+        // ignore
       }
     }
 
-    clearElementReferences( rootNode );
-
-    // Create the actual elements with hand-drawn style
-    for ( const item of nodePositions )
-    {
-      // Create a new text element with our function
-      const elementId=createTextElement( item.x, item.y, item.text );
-      const element=ea.getElement( elementId );
-
-      // Update the node reference
-      item.node.element=element;
-    }
-
-    // Connect elements with arrows
-    function connectWithArrows ( node )
-    {
-      if ( !node.children||node.children.length===0 )
-      {
-        return;
-      }
-
-      for ( const child of node.children )
-      {
-        if ( node.element&&child.element )
-        {
-          const sourceEl=node.element;
-          const targetEl=child.element;
-
-          // Create a new bound arrow between source and target
-          addBoundArrowBetween( sourceEl, targetEl, arrowOptions );
-        }
-
-        // Recursively connect child's children
-        connectWithArrows( child );
-      }
-    }
-
-    connectWithArrows( rootNode );
-
-    // Delete the old temporary elements
-    try
-    {
-      for ( const elementId of oldElementIds )
-      {
-        const element=ea.getElement( elementId );
-        if ( element )
-        {
-          element.isDeleted=true;
-        }
-      }
-    } catch ( e )
-    {
-      console.log( "Error deleting elements:", e );
-    }
-
-    // Remove or hide the original text block
-    ea.copyViewElementsToEAforEditing( [] );
-    ea.deleteViewElements( [ originalTextEl.id ] );
-
-    // Finalize by adding elements to view
-    await ea.addElementsToView( false, false, true );
-    new Notice( "Created mindmap from bulleted text!" );
+    await ea.addElementsToView(false, false, true);
+    new Notice('Created mindmap from bulleted text!');
   }
 
-  // The user presumably wants to convert a bulleted text block to a mindmap
-  const textElement=selectedElements[ 0 ];
+  // The user wants to convert a bulleted text block to a mindmap
+  const textElement = selectedElements[0];
 
-  // 1. Grab the text (including line breaks)
-  let rawText=textElement.text||"";
-  rawText=rawText.trim();
-  if ( !rawText )
-  {
-    new Notice( "The selected text block is empty." );
+  let rawText = (textElement.text || '').trim();
+  if (!rawText) {
+    new Notice('The selected text block is empty.');
     return;
   }
 
-  // 2. Parse the bulleted text into a tree
-  const rootNodes=await parseBulletedText( rawText );
-
-  if ( !rootNodes||rootNodes.length===0 )
-  {
-    new Notice( "No valid bullet lines found in the selected text block." );
+  const rootNodes = await parseBulletedText(rawText);
+  if (!rootNodes || rootNodes.length === 0) {
+    new Notice('No valid bullet lines found in the selected text block.');
     return;
   }
 
-  // 3. Get the root node (we've already handled the multiple root case in parseBulletedText)
-  const rootNode=rootNodes[ 0 ];
+  const rootNode = rootNodes[0];
 
-  // 4. Create the mindmap from that root node
-  buildMindmapFromBullets( rootNode, textElement );
+  // Fix #1: ensure we await the async build
+  await buildMindmapFromBullets(rootNode, textElement);
 
   return; // end script
 }
 
+// -----------------------------------------------------
 // If only one element is selected, and it is connected, perform grouping action
-if ( selectedElements.length===1&&
-  selectedElements[ 0 ].type==='text' )
-{
-  const rootElement=selectedElements[ 0 ];
+// BUT: if CTRL/CMD is held, offer Insert Child/Sibling menu instead.
+// -----------------------------------------------------
+if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
+  snapshot = snapshotCanvas();
+  const rootElement = selectedElements[0];
 
-  // Function to recursively find all child elements
-  function getChildElements ( element, allElements, visited )
-  {
-    visited=visited||new Set();
-    let children=[];
-
-    // Prevent cycles
-    if ( visited.has( element.id ) )
-    {
-      return children;
+  // Only show add child/sibling when Ctrl/Cmd is held
+  if (isCtrlOrCmdPressed()) {
+    const res = await insertChildOrSiblingFlow(rootElement, snapshot);
+    if (res && res.didInsert) return; // insertion (or canceled) handled
+    if (res && res.forceOutline) {
+      // fall through to default outline behavior
+    } else {
+      // If user canceled chooser, do nothing
+      return;
     }
-    visited.add( element.id );
+  }
 
-    // Get all arrows starting from this element
-    const outgoingArrows=allElements.filter( el =>
-    {
-      if ( el.type==='arrow'&&el.startBinding&&el.startBinding.elementId===element.id )
-      {
-        // Get the end element
-        const endElement=allElements.find( e => e.id===el.endBinding?.elementId );
-        if ( endElement&&endElement.x>element.x )
-        {
-          // The child element is on the right side
-          return true;
-        }
-      }
-      return false;
-    } );
+  function getChildElements(element, snap, visited) {
+    visited = visited || new Set();
+    let children = [];
 
-    for ( let arrow of outgoingArrows )
-    {
-      const childElementId=arrow.endBinding.elementId;
-      const childElement=allElements.find( e => e.id===childElementId );
+    if (visited.has(element.id)) return children;
+    visited.add(element.id);
 
-      if ( childElement )
-      {
-        children.push( childElement );
-        children.push( arrow ); // Include the arrow in the group
+    const outgoing = snap.outgoingArrows.get(element.id) || [];
+    for (let arrow of outgoing) {
+      const endId = arrow.endBinding?.elementId;
+      const endElement = endId ? snap.byId.get(endId) : null;
 
-        // Recursively get children of this child
-        const grandChildren=getChildElements( childElement, allElements, visited );
-        children=children.concat( grandChildren );
+      if (endElement && endElement.x > element.x) {
+        children.push(endElement);
+        children.push(arrow);
+
+        const grandChildren = getChildElements(endElement, snap, visited);
+        children = children.concat(grandChildren);
       }
     }
 
     return children;
   }
 
-  /**
-  * Recursively build a bullet-list outline from a "root" shape,
-  * including all children on its right side, and each child's children, etc.
-  *
-  * @param {Object} element The shape from which to start
-  * @param {Object[]} allElements All shapes/arrows on the canvas
-  * @param {Set} visited For cycle prevention
-  * @param {number} depth Indentation level
-  * @returns {string} The bullet-list text representing this node and its descendants
-  */
-  function buildOutline ( element, allElements, visited=new Set(), depth=0 )
-  {
-    // If we've seen this shape already, bail out (avoid cycles)
-    if ( visited.has( element.id ) )
-    {
-      return "";
-    }
-    visited.add( element.id );
+  function buildOutline(element, snap, visited = new Set(), depth = 0) {
+    if (visited.has(element.id)) return '';
+    visited.add(element.id);
 
-    // Figure out how we label each element
-    let label=element.text?.trim()??`Element ${ element.id }`;
-    // Remove all line breaks from the node text
-    label=label.replace( /\r?\n/g, " " );
+    let label = element.text?.trim() ?? `Element ${element.id}`;
+    label = label.replace(/\r?\n/g, ' ');
 
-    // Adjust indentation
-    let indent="\t".repeat( depth );
+    let indent = '\t'.repeat(depth);
+    const useDash = settings['Add dash bullet'].value;
+    let bulletPrefix = useDash ? '- ' : '';
 
-    // The new setting read:
-    const useDash=settings[ "Add dash bullet" ].value;
-    // If it's true, we'll prepend "- ", otherwise just an empty string or something else
-    let bulletPrefix=useDash? "- ":"";
+    let outline = `${indent}${bulletPrefix}${label}\n`;
 
-    // Form this line
-    let outline=`${ indent }${ bulletPrefix }${ label }\n`;
+    const outgoing = snap.outgoingArrows.get(element.id) || [];
+    let childShapes = [];
 
-    // Find all arrow-based children to the right
-    const outgoingArrows=allElements.filter( ( el ) =>
-    {
-      if ( el.type==="arrow"&&el.startBinding?.elementId===element.id )
-      {
-        const endEl=allElements.find( ( e ) => e.id===el.endBinding?.elementId );
-        if ( endEl&&endEl.x>element.x )
-        {
-          return true;
-        }
-      }
-      return false;
-    } );
-
-    // Collect the child elements (shapes) from those arrows
-    let childShapes=[];
-    for ( let arrow of outgoingArrows )
-    {
-      const childId=arrow.endBinding?.elementId;
-      const childEl=allElements.find( ( e ) => e.id===childId );
-      if ( childEl )
-      {
-        childShapes.push( childEl );
-      }
+    for (let arrow of outgoing) {
+      const childId = arrow.endBinding?.elementId;
+      const childEl = childId ? snap.byId.get(childId) : null;
+      if (childEl && childEl.x > element.x) childShapes.push(childEl);
     }
 
-    // **Sort the child elements top-to-bottom** by their y coordinate
-    // (You could also sort by the center y if desired: childEl.y + childEl.height/2)
-    childShapes.sort( ( a, b ) => a.y-b.y );
+    childShapes.sort((a, b) => a.y - b.y);
 
-    // Recursively include children's text in sorted order
-    for ( let childEl of childShapes )
-    {
-      outline+=buildOutline( childEl, allElements, visited, depth+1 );
+    for (let childEl of childShapes) {
+      outline += buildOutline(childEl, snap, visited, depth + 1);
     }
 
     return outline;
   }
 
-  // Get all elements in the canvas
-  const allElements=ea.getViewElements();
+  const childElements = getChildElements(rootElement, snapshot);
+  if (childElements.length > 0) {
+    const elementsToGroup = [rootElement].concat(childElements);
+    const elementIdsToGroup = elementsToGroup.map(el => el.id);
+    const addBox = settings['Box selected'].value;
 
-  // Get all child elements recursively
-  const childElements=getChildElements( rootElement, allElements );
-  if ( childElements.length>0 )
-  {
-    // Include the root element in the group
-    const elementsToGroup=[ rootElement ].concat( childElements );
-
-    // Group the elements
-    const elementIdsToGroup=elementsToGroup.map( el => el.id );
-    const addBox=settings[ "Box selected" ].value;
-    if ( addBox )
-    {
-      const box=ea.getBoundingBox( elementsToGroup );
-      const padding=5;
-      color=ea
-        .getExcalidrawAPI()
-        .getAppState()
-        .currentItemStrokeColor;
-      ea.style.strokeColor=color;
-      ea.style.roundness={ type: 2, value: padding };
-      id=ea.addRect(
-        box.topX-padding,
-        box.topY-padding,
-        box.width+2*padding,
-        box.height+2*padding
+    if (addBox) {
+      const box = ea.getBoundingBox(elementsToGroup);
+      const padding = 5;
+      color = ea.getExcalidrawAPI().getAppState().currentItemStrokeColor;
+      ea.style.strokeColor = color;
+      ea.style.roundness = { type: 2, value: padding };
+      id = ea.addRect(
+        box.topX - padding,
+        box.topY - padding,
+        box.width + 2 * padding,
+        box.height + 2 * padding
       );
-      // Ensure the box appears behind other grouped elements if API supports it
       try {
-        if ( typeof ea.sendToBack==="function" ) {
-          ea.sendToBack( [ id ] );
+        if (typeof ea.sendToBack === 'function') {
+          ea.sendToBack([id]);
         } else {
-          const api=ea.getExcalidrawAPI?.();
-          if ( api&&typeof api.sendToBack==="function" ) {
-            api.sendToBack( [ id ] );
+          const api = ea.getExcalidrawAPI?.();
+          if (api && typeof api.sendToBack === 'function') {
+            api.sendToBack([id]);
           }
         }
-      } catch ( _e ) {
-        // silently ignore if layering API not available
+      } catch (_e) {
+        // ignore
       }
-      ea.copyViewElementsToEAforEditing( elementsToGroup );
-      ea.addToGroup( [ id ].concat( elementIdsToGroup ) );
+
+      ea.copyViewElementsToEAforEditing(elementsToGroup);
+      ea.addToGroup([id].concat(elementIdsToGroup));
+    } else {
+      ea.copyViewElementsToEAforEditing(elementsToGroup);
+      ea.addToGroup(elementIdsToGroup);
     }
-    else
-    {
-      ea.copyViewElementsToEAforEditing( elementsToGroup );
-      ea.addToGroup( elementIdsToGroup );
-    }
 
+    await ea.addElementsToView(false, false, true);
 
-    // Add elements to view
-    await ea.addElementsToView( false, false, true );
-
-    new Notice( `Grouped ${ elementsToGroup.length } elements.` );
-  } else
-  {
-    new Notice( "No child elements found for the selected element." );
+    new Notice(`Grouped ${elementsToGroup.length} elements.`);
+  } else {
+    new Notice('No child elements found for the selected element.');
   }
 
-  // Generate the bullet text from the new function
-  const bulletText=buildOutline( rootElement, allElements );
+  const bulletText = buildOutline(rootElement, snapshot);
 
-  // Copy bullet text to the clipboard
-  try
-  {
-    if ( navigator?.clipboard?.writeText )
-    {
-      await navigator.clipboard.writeText( bulletText );
-      new Notice( "Mindmap text copied to clipboard!" );
-    } else
-    {
-      ea.setClipboard( bulletText );
-      new Notice( "Mindmap text copied to plugin clipboard!" );
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(bulletText);
+      new Notice('Mindmap text copied to clipboard!');
+    } else {
+      ea.setClipboard(bulletText);
+      new Notice('Mindmap text copied to plugin clipboard!');
     }
-  } catch ( err )
-  {
-    console.error( "Clipboard error:", err );
-    new Notice( "Error copying bullet text to clipboard!" );
+  } catch (err) {
+    console.error('Clipboard error:', err);
+    new Notice('Error copying bullet text to clipboard!');
   }
 
-  // End the script here since we've performed the grouping action
   return;
 }
 
+// -----------------------------------------------------
 // If more than one element is selected, perform the connection action
+// -----------------------------------------------------
+
+// Refresh snapshot for multi-select mode
+snapshot = snapshotCanvas();
 
 // Filter out arrows and lines from selection
-const nonArrowElements=selectedElements.filter( el => el.type!=='arrow'&&el.type!=='line' );
+const nonArrowElements = selectedElements.filter(
+  el => el.type !== 'arrow' && el.type !== 'line'
+);
+const onlyNonArrowsSelected =
+  nonArrowElements.length === selectedElements.length;
 
-// Check if all selected elements are non-arrows
-const onlyNonArrowsSelected=nonArrowElements.length===selectedElements.length;
+let userAction = 'connect';
 
-// Skip the prompt if only non-arrows are selected
-let userAction="connect";
-
-// Show the prompt only if there are arrows in the selection
-if ( !onlyNonArrowsSelected )
-{
-  userAction=await utils.suggester(
-    [ "Connect elements", "Delete arrows" ],
-    [ "connect", "delete" ],
-    "What do you want to do with the selected elements?"
+if (!onlyNonArrowsSelected) {
+  userAction = await utils.suggester(
+    ['Connect elements', 'Delete arrows'],
+    ['connect', 'delete'],
+    'What do you want to do with the selected elements?'
   );
 
-  // Exit if the user cancels the action
-  if ( userAction===null )
-  {
-    return;
-  }
+  if (userAction === null) return;
 }
 
-// Move these variable declarations outside the if block for accessibility
-const arrowStart=settings[ "Starting arrowhead" ].value==="none"? null:settings[ "Starting arrowhead" ].value;
-const arrowEnd=settings[ "Ending arrowhead" ].value==="none"? null:settings[ "Ending arrowhead" ].value;
-const linePoints=Math.floor( settings[ "Line points" ].value );
+const arrowStart =
+  settings['Starting arrowhead'].value === 'none'
+    ? null
+    : settings['Starting arrowhead'].value;
+const arrowEnd =
+  settings['Ending arrowhead'].value === 'none'
+    ? null
+    : settings['Ending arrowhead'].value;
+const linePoints = Math.floor(settings['Line points'].value);
 
-// Define arrow options at the global scope so it's accessible to all functions
-const arrowOptions={
+const arrowOptions = {
   startArrowHead: arrowStart,
   endArrowHead: arrowEnd,
   numberOfPoints: linePoints,
-  strokeColor: "#000000", // Default color, will be updated in connect action
-  strokeWidth: 1,         // Default width, will be updated in connect action
-  strokeStyle: "solid",   // Default style, will be updated in connect action
-  roughness: 0,           // Adjust as needed
+  strokeColor: '#000000',
+  strokeWidth: 1,
+  strokeStyle: 'solid',
+  roughness: 0,
 };
 
-if ( userAction==="connect" )
-{
-  // Original connection logic
+if (userAction === 'connect') {
+  selectedElements = selectedElements.filter(
+    el => el.type !== 'arrow' && el.type !== 'line'
+  );
 
-  // Get selected elements, excluding arrows and lines
-  selectedElements=selectedElements.filter( el => el.type!=='arrow'&&el.type!=='line' );
+  const selectedTexts = selectedElements.filter(el => el.type === 'text');
+  const elementsForConnect =
+    selectedTexts.length > 0 ? selectedTexts : selectedElements;
 
-  // Use only selected texts for connection logic when available
-  const selectedTexts=selectedElements.filter( el => el.type==='text' );
-  const elementsForConnect=selectedTexts.length>0? selectedTexts:selectedElements;
-
-  // Helper: absolute endpoint of arrow
-  function getArrowEndpointAbs ( arrow, atStart )
-  {
-    const idx=atStart? 0:arrow.points.length-1;
-    const p=arrow.points[ idx ];
-    return [ arrow.x+p[ 0 ], arrow.y+p[ 1 ] ];
+  function getArrowEndpointAbs(arrow, atStart) {
+    const idx = atStart ? 0 : arrow.points.length - 1;
+    const p = arrow.points[idx];
+    return [arrow.x + p[0], arrow.y + p[1]];
   }
 
-  // Helper: distance from point to rect of element
-  function pointToRectDistance ( px, py, el )
-  {
-    const rx0=el.x, ry0=el.y, rx1=el.x+el.width, ry1=el.y+el.height;
-    const dx=Math.max( rx0-px, 0, px-rx1 );
-    const dy=Math.max( ry0-py, 0, py-ry1 );
-    return Math.hypot( dx, dy );
+  function pointInsideRect(px, py, el) {
+    return (
+      px >= el.x &&
+      px <= el.x + el.width &&
+      py >= el.y &&
+      py <= el.y + el.height
+    );
   }
 
-  // Helper: check if point is inside a text element's box
-  function pointInsideTextRect ( px, py, t )
-  {
-    return px>=t.x&&px<=t.x+t.width&&py>=t.y&&py<=t.y+t.height;
-  }
-  // Helper: return the selected text containing the point, else null
-  function findSelectedTextContainingPoint ( px, py, texts )
-  {
-    for ( const t of texts )
-    {
-      if ( pointInsideTextRect( px, py, t ) ) return t;
+  function findSelectedContainingPoint(px, py, els) {
+    for (const t of els) {
+      if (pointInsideRect(px, py, t)) return t;
     }
     return null;
   }
 
-  // Delete all existing arrows that connect between two selected texts only
-  async function deleteArrowsBetweenSelectedTexts ( texts )
-  {
-    if ( !texts||texts.length===0 ) return;
-    const allElements=ea.getViewElements();
-    const textIds=new Set( texts.map( t => t.id ) );
-    const arrows=allElements.filter( e => e.type==='arrow' );
+  async function deleteArrowsBetweenSelectedElements(selectedEls, snap) {
+    if (!selectedEls || selectedEls.length === 0) return;
 
-    const toDelete=[];
-    for ( const a of arrows )
-    {
-      const sId=a.startBinding?.elementId||null;
-      const eId=a.endBinding?.elementId||null;
+    const selectedIds = new Set(selectedEls.map(e => e.id));
+    const arrows = snap.arrows;
 
-      // If bound to non-selected elements, skip deletion
-      if ( sId&&!
-        textIds.has( sId ) ) continue;
-      if ( eId&&!
-        textIds.has( eId ) ) continue;
+    const toDelete = [];
 
-      let sText=null, eText=null;
+    for (const a of arrows) {
+      const sId = a.startBinding?.elementId || null;
+      const eId = a.endBinding?.elementId || null;
 
-      if ( sId&&textIds.has( sId ) )
-      {
-        sText=texts.find( t => t.id===sId );
-      } else if ( !sId )
-      {
-        const [ sx, sy ]=getArrowEndpointAbs( a, true );
-        sText=findSelectedTextContainingPoint( sx, sy, texts );
+      // If bound to non-selected elements, skip
+      if (sId && !selectedIds.has(sId)) continue;
+      if (eId && !selectedIds.has(eId)) continue;
+
+      let sEl = null,
+        eEl = null;
+
+      if (sId && selectedIds.has(sId)) {
+        sEl = snap.byId.get(sId) || null;
+      } else if (!sId) {
+        const [sx, sy] = getArrowEndpointAbs(a, true);
+        sEl = findSelectedContainingPoint(sx, sy, selectedEls);
       }
 
-      if ( eId&&textIds.has( eId ) )
-      {
-        eText=texts.find( t => t.id===eId );
-      } else if ( !eId )
-      {
-        const [ ex, ey ]=getArrowEndpointAbs( a, false );
-        eText=findSelectedTextContainingPoint( ex, ey, texts );
+      if (eId && selectedIds.has(eId)) {
+        eEl = snap.byId.get(eId) || null;
+      } else if (!eId) {
+        const [ex, ey] = getArrowEndpointAbs(a, false);
+        eEl = findSelectedContainingPoint(ex, ey, selectedEls);
       }
 
-      if ( sText&&eText ) toDelete.push( a );
+      if (sEl && eEl) toDelete.push(a);
     }
 
-    if ( toDelete.length===0 ) return;
-    ea.copyViewElementsToEAforEditing( toDelete );
-    for ( const a of toDelete )
-    {
-      const live=ea.getElement( a.id )||a;
-      if ( live ) live.isDeleted=true;
+    if (toDelete.length === 0) return;
+
+    ea.copyViewElementsToEAforEditing(toDelete);
+    for (const a of toDelete) {
+      const live = ea.getElement(a.id) || a;
+      if (live) live.isDeleted = true;
     }
-    await ea.addElementsToView( false, false, true );
+    await ea.addElementsToView(false, false, true);
   }
 
-  await deleteArrowsBetweenSelectedTexts( elementsForConnect );
+  // Delete arrows first, then refresh snapshot (Fix #2: keep adjacency accurate)
+  await deleteArrowsBetweenSelectedElements(elementsForConnect, snapshot);
+  snapshot = snapshotCanvas();
 
-  // Copy selected elements to EA for editing
-  ea.copyViewElementsToEAforEditing( elementsForConnect );
+  ea.copyViewElementsToEAforEditing(elementsForConnect);
 
-  // Apply line style from the first element
-  ea.style.strokeColor=elementsForConnect[ 0 ].strokeColor;
-  ea.style.strokeWidth=elementsForConnect[ 0 ].strokeWidth;
-  ea.style.strokeStyle=elementsForConnect[ 0 ].strokeStyle;
-  ea.style.strokeSharpness=elementsForConnect[ 0 ].strokeSharpness;
+  ea.style.strokeColor = elementsForConnect[0].strokeColor;
+  ea.style.strokeWidth = elementsForConnect[0].strokeWidth;
+  ea.style.strokeStyle = elementsForConnect[0].strokeStyle;
+  ea.style.strokeSharpness = elementsForConnect[0].strokeSharpness;
 
-  // Update arrow options with current style
-  arrowOptions.strokeColor=ea.style.strokeColor;
-  arrowOptions.strokeWidth=ea.style.strokeWidth;
-  arrowOptions.strokeStyle=ea.style.strokeStyle;
+  arrowOptions.strokeColor = ea.style.strokeColor;
+  arrowOptions.strokeWidth = ea.style.strokeWidth;
+  arrowOptions.strokeStyle = ea.style.strokeStyle;
 
-  // Class to represent a node in the tree
-  class Node
-  {
-    constructor ( element )
-    {
-      this.element=element;
-      this.parent=null;
-      this.children=[];
+  class Node {
+    constructor(element) {
+      this.element = element;
+      this.parent = null;
+      this.children = [];
     }
   }
 
-  // Create nodes from all selected elements
-  let nodes=elementsForConnect.map( el => new Node( el ) );
+  let nodes = elementsForConnect.map(el => new Node(el));
+  nodes.sort((a, b) => a.element.x - b.element.x);
 
-  // Sort nodes by their leftmost x position
-  nodes.sort( ( a, b ) => a.element.x-b.element.x );
+  const rootNode = nodes[0];
 
-  // Identify the root node (leftmost node)
-  const rootNode=nodes[ 0 ];
+  for (let i = 1; i < nodes.length; i++) {
+    const node = nodes[i];
+    const el = node.element;
+    const elLeftX = el.x;
 
-  // Build the tree by assigning parents
-  for ( let i=1;i<nodes.length;i++ )
-  {
-    const node=nodes[ i ];
-    const el=node.element;
-    const elLeftX=el.x;
-    const elRightX=el.x+el.width;
-    const elTopY=el.y;
-    const elBottomY=el.y+el.height;
-
-    // Find potential parents among nodes to the left
-    let potentialParents=[];
-    for ( let j=0;j<i;j++ )
-    {
-      const potentialParentNode=nodes[ j ];
-      const parentEl=potentialParentNode.element;
-      const parentRightX=parentEl.x+parentEl.width;
-
-      if ( parentRightX<elLeftX )
-      {
-        potentialParents.push( potentialParentNode );
-      }
+    let potentialParents = [];
+    for (let j = 0; j < i; j++) {
+      const p = nodes[j];
+      const parentRightX = p.element.x + p.element.width;
+      if (parentRightX < elLeftX) potentialParents.push(p);
     }
 
-    // Filter to keep only column-adjacent nodes
-    const columnAdjacentNodes=potentialParents.filter( parentNode =>
-    {
-      const parentRightX=parentNode.element.x+parentNode.element.width;
+    const columnAdjacentNodes = potentialParents.filter(parentNode => {
+      const parentRightX = parentNode.element.x + parentNode.element.width;
+      return !potentialParents.some(otherNode => {
+        if (otherNode === parentNode) return false;
+        const otherLeftX = otherNode.element.x;
+        const otherRightX = otherNode.element.x + otherNode.element.width;
+        return otherLeftX > parentRightX && otherRightX < elLeftX;
+      });
+    });
 
-      // Check if any other node is between this parent and current node
-      return !potentialParents.some( otherNode =>
-      {
-        if ( otherNode===parentNode ) return false;
-        const otherLeftX=otherNode.element.x;
-        const otherRightX=otherNode.element.x+otherNode.element.width;
-        return otherLeftX>parentRightX&&otherRightX<elLeftX;
-      } );
-    } );
+    if (columnAdjacentNodes.length > 0) {
+      let closestParent = null;
+      let minYGap = Infinity;
 
-    // Find the parent with minimum y-gap
-    if ( columnAdjacentNodes.length>0 )
-    {
-      let closestParent=null;
-      let minYGap=Infinity;
+      for (let potentialParent of columnAdjacentNodes) {
+        const parentEl = potentialParent.element;
+        const parentCenterY = parentEl.y + parentEl.height / 2;
+        const elementCenterY = el.y + el.height / 2;
+        const yGap = Math.abs(elementCenterY - parentCenterY);
 
-      for ( let potentialParent of columnAdjacentNodes )
-      {
-        const parentEl=potentialParent.element;
-        const parentCenterY=parentEl.y+parentEl.height/2;
-        const elementCenterY=el.y+el.height/2;
-        const yGap=Math.abs( elementCenterY-parentCenterY );
-
-        if ( yGap<minYGap )
-        {
-          minYGap=yGap;
-          closestParent=potentialParent;
+        if (yGap < minYGap) {
+          minYGap = yGap;
+          closestParent = potentialParent;
         }
       }
 
-      // Assign parent and add child to parent's children
-      if ( closestParent )
-      {
-        node.parent=closestParent;
-        closestParent.children.push( node );
+      if (closestParent) {
+        node.parent = closestParent;
+        closestParent.children.push(node);
       }
-    } else
-    {
-      // If no column-adjacent parents, assign root node as parent
-      if ( node!==rootNode )
-      {
-        node.parent=rootNode;
-        rootNode.children.push( node );
+    } else {
+      if (node !== rootNode) {
+        node.parent = rootNode;
+        rootNode.children.push(node);
       }
     }
   }
 
-  // Start creating arrows from the root node
-  createArrows( rootNode );
+  // Fast connection existence check using snapshot (Fix #2)
+  function areElementsConnected(sourceId, targetId, snap) {
+    return snap.boundArrowPairs.has(`${sourceId}->${targetId}`);
+  }
 
-  // Finalize by adding elements to view
-  await ea.addElementsToView( false, false, true );
+  function createArrows(node, snap) {
+    for (let child of node.children) {
+      const sourceEl = node.element;
+      const targetEl = child.element;
 
-  new Notice( "Connected elements with arrows." );
-} else if ( userAction==="delete" )
-{
-  const allElements=ea.getViewElements();
-  const selectedIds=new Set( selectedElements.map( el => el.id ) );
+      if (!areElementsConnected(sourceEl.id, targetEl.id, snap)) {
+        addBoundArrowBetween(sourceEl, targetEl, arrowOptions);
+        snap.boundArrowPairs.add(`${sourceEl.id}->${targetEl.id}`);
+      }
 
-  // 1) arrows that are directly selected
-  const directlySelectedArrows=selectedElements.filter( el => el.type==='arrow' );
+      if (child.children.length > 0) createArrows(child, snap);
+    }
+  }
 
-  // 2) arrows connected to any selected element (start or end)
-  const connectedArrows=allElements.filter( el =>
-  {
-    if ( el.type!=='arrow' ) return false;
-    const startId=el.startBinding?.elementId;
-    const endId=el.endBinding?.elementId;
-    return ( startId&&selectedIds.has( startId ) )||( endId&&selectedIds.has( endId ) );
-  } );
+  createArrows(rootNode, snapshot);
 
-  // De-dup
-  const toDeleteMap=new Map();
-  for ( const a of directlySelectedArrows ) toDeleteMap.set( a.id, a );
-  for ( const a of connectedArrows ) toDeleteMap.set( a.id, a );
+  await ea.addElementsToView(false, false, true);
+  new Notice('Connected elements with arrows.');
+} else if (userAction === 'delete') {
+  const selectedIds = new Set(selectedElements.map(el => el.id));
 
-  const arrowsToDelete=Array.from( toDeleteMap.values() );
+  const directlySelectedArrows = selectedElements.filter(
+    el => el.type === 'arrow'
+  );
 
-  if ( arrowsToDelete.length===0 )
-  {
-    new Notice( "No arrows found connected to the selected elements." );
+  const connectedArrows = snapshot.arrows.filter(el => {
+    const startId = el.startBinding?.elementId;
+    const endId = el.endBinding?.elementId;
+    return (
+      (startId && selectedIds.has(startId)) || (endId && selectedIds.has(endId))
+    );
+  });
+
+  const toDeleteMap = new Map();
+  for (const a of directlySelectedArrows) toDeleteMap.set(a.id, a);
+  for (const a of connectedArrows) toDeleteMap.set(a.id, a);
+
+  const arrowsToDelete = Array.from(toDeleteMap.values());
+
+  if (arrowsToDelete.length === 0) {
+    new Notice('No arrows found connected to the selected elements.');
     return;
   }
 
-  // Stage for edit, then mark isDeleted, then commit
-  ea.copyViewElementsToEAforEditing( arrowsToDelete );
+  ea.copyViewElementsToEAforEditing(arrowsToDelete);
 
-  for ( const a of arrowsToDelete )
-  {
-    const live=ea.getElement( a.id )||a;
-    if ( live ) live.isDeleted=true;
+  for (const a of arrowsToDelete) {
+    const live = ea.getElement(a.id) || a;
+    if (live) live.isDeleted = true;
   }
 
-  await ea.addElementsToView( false, false, true );
-  new Notice( `Deleted ${ arrowsToDelete.length } arrow${ arrowsToDelete.length>1? 's':'' }.` );
+  await ea.addElementsToView(false, false, true);
+  new Notice(
+    `Deleted ${arrowsToDelete.length} arrow${
+      arrowsToDelete.length > 1 ? 's' : ''
+    }.`
+  );
 }
 
 /**
- * getEdgePoint(element, targetX, targetY)
- * Always returns a point on the left or right boundary of `element`.
- * If the target is to the right, you get the right edge (x + w).
- * If the target is to the left, you get the left edge (x).
- * We then compute a vertical offset using the slope from the shape's center
- * and clamp the result so it stays within the element's top and bottom.
+ * Create a new arrow and force physical binding to source/target
  */
-function getEdgePoint ( element, targetX, targetY )
-{
-  const x=element.x;
-  const y=element.y;
-  const w=element.width;
-  const h=element.height;
+function addBoundArrowBetween(sourceEl, targetEl, style = {}) {
+  const sourceCenterX = sourceEl.x + sourceEl.width / 2;
+  const targetCenterX = targetEl.x + targetEl.width / 2;
 
-  const centerX=x+w/2;
-  const centerY=y+h/2;
+  // Always connect horizontally for mindmaps
+  const goRight = targetCenterX >= sourceCenterX;
+  const sourceSide = goRight ? 'right' : 'left';
+  const targetSide = goRight ? 'left' : 'right';
 
-  const dx=targetX-centerX;
-  const dy=targetY-centerY;
+  const startArrowHead = normalizeArrowHead(style.startArrowHead);
+  const endArrowHead = normalizeArrowHead(style.endArrowHead);
+  const numberOfPoints = Number.isFinite(style.numberOfPoints)
+    ? style.numberOfPoints
+    : 0;
 
-  // If dx is 0, we can't do a slope calculation (vertical line).
-  // Fallback to right edge if you prefer, or left if you prefer.
-  if ( dx===0 )
-  {
-    return [ x+w, centerY ];
-  }
+  if (typeof style.strokeColor !== 'undefined')
+    ea.style.strokeColor = style.strokeColor;
+  if (typeof style.strokeWidth !== 'undefined')
+    ea.style.strokeWidth = style.strokeWidth;
+  if (typeof style.strokeStyle !== 'undefined')
+    ea.style.strokeStyle = style.strokeStyle;
+  if (typeof style.strokeSharpness !== 'undefined')
+    ea.style.strokeSharpness = style.strokeSharpness;
+  if (typeof style.roughness !== 'undefined')
+    ea.style.roughness = style.roughness;
 
-  // Slope from center to target
-  const slope=dy/dx;
-
-  let edgeX, edgeY;
-
-  // If the target is to the right, use the right edge
-  if ( dx>0 )
-  {
-    edgeX=x+w;
-    // Horizontal distance from center to right edge is w/2
-    edgeY=centerY+slope*( w/2 );
-  }
-  // Otherwise, use the left edge
-  else
-  {
-    edgeX=x;
-    // Horizontal distance from center to left edge is w/2
-    edgeY=centerY-slope*( w/2 );
-  }
-
-  // Make sure we stay within the top and bottom edges of the shape
-  if ( edgeY<y ) edgeY=y;
-  if ( edgeY>y+h ) edgeY=y+h;
-
-  return [ edgeX, edgeY ];
-}
-
-// Function to check if two elements are already connected
-function areElementsConnected ( sourceId, targetId )
-{
-  const allElements=ea.getViewElements();
-  for ( let el of allElements )
-  {
-    if ( el.type==='arrow' )
+  // Some builds return the id, some return void; keep best-effort logic.
+  const createdId = ea.connectObjects(
+    sourceEl.id,
+    sourceSide,
+    targetEl.id,
+    targetSide,
     {
-      const startId=el.startBinding? el.startBinding.elementId:null;
-      const endId=el.endBinding? el.endBinding.elementId:null;
-      if ( startId===sourceId&&endId===targetId )
-      {
-        return true;
+      numberOfPoints,
+      startArrowHead,
+      endArrowHead,
+      padding: 0,
+    }
+  );
+
+  // Best-effort centering: set binding focus to edge center if available.
+  try {
+    if (createdId) {
+      const a = ea.getElement(createdId);
+      if (a && a.type === 'arrow') {
+        if (a.startBinding) {
+          a.startBinding.focus = 0;
+          if (a.startBinding.fixedPoint)
+            a.startBinding.fixedPoint = goRight ? [1, 0.5] : [0, 0.5];
+        }
+        if (a.endBinding) {
+          a.endBinding.focus = 0;
+          if (a.endBinding.fixedPoint)
+            a.endBinding.fixedPoint = goRight ? [0, 0.5] : [1, 0.5];
+        }
       }
     }
+  } catch (_e) {
+    // ignore
   }
-  return false;
 }
 
-// Create a new arrow and force physical binding to source/target
-function addBoundArrowBetween ( sourceEl, targetEl, style )
-{
-  // Decide sides based on relative centers to keep anchors on edges
-  const sourceCenterX=sourceEl.x+sourceEl.width/2;
-  const sourceCenterY=sourceEl.y+sourceEl.height/2;
-  const targetCenterX=targetEl.x+targetEl.width/2;
-  const targetCenterY=targetEl.y+targetEl.height/2;
+function pickArrowStyleFor(sourceEl, snap) {
+  const candidates = []
+    .concat(snap.outgoingArrows.get(sourceEl.id) || [])
+    .concat(snap.incomingArrows.get(sourceEl.id) || []);
 
-  const dx=targetCenterX-sourceCenterX;
-  const dy=targetCenterY-sourceCenterY;
-  const useHorizontal=Math.abs( dx )>=Math.abs( dy );
-  const sourceSide=useHorizontal? ( dx>=0? "right":"left" ):( dy>=0? "bottom":"top" );
-  const targetSide=useHorizontal? ( dx>=0? "left":"right" ):( dy>=0? "top":"bottom" );
+  // Prefer a real bound arrow that already exists
+  const hit = candidates.find(a => a.type === 'arrow' && !a.isDeleted);
+  if (hit) return hit;
 
-  // Ensure connectObjects picks up the stroke formatting
-  if ( typeof style.strokeColor!=="undefined" ) ea.style.strokeColor=style.strokeColor;
-  if ( typeof style.strokeWidth!=="undefined" ) ea.style.strokeWidth=style.strokeWidth;
-  if ( typeof style.strokeStyle!=="undefined" ) ea.style.strokeStyle=style.strokeStyle;
-  if ( typeof style.roughness!=="undefined" ) ea.style.roughness=style.roughness;
-
-  ea.connectObjects( sourceEl.id, sourceSide, targetEl.id, targetSide, {
-    numberOfPoints: style.numberOfPoints,
-    startArrowHead: style.startArrowHead,
-    endArrowHead: style.endArrowHead,
-  } );
+  // Fallback: any arrow on the canvas
+  return (snap.arrows || []).find(a => !a.isDeleted) || null;
 }
 
-// Function to create arrows recursively
-function createArrows ( node )
-{
-  for ( let child of node.children )
-  {
-    const sourceEl=node.element; // Parent element
-    const targetEl=child.element; // Child element
+function makeArrowOptionsFromSource(sourceEl, snap) {
+  const a = pickArrowStyleFor(sourceEl, snap);
+  const app = ea.getExcalidrawAPI().getAppState();
 
-    // Calculate centers
-    const sourceCenterX=sourceEl.x+sourceEl.width/2;
-    const sourceCenterY=sourceEl.y+sourceEl.height/2;
+  return {
+    startArrowHead: normalizeArrowHead(
+      settings['Starting arrowhead'].value === 'none'
+        ? null
+        : settings['Starting arrowhead'].value
+    ),
+    endArrowHead: normalizeArrowHead(
+      settings['Ending arrowhead'].value === 'none'
+        ? null
+        : settings['Ending arrowhead'].value
+    ),
+    numberOfPoints: Math.floor(settings['Line points'].value) || 0,
 
-    const targetCenterX=targetEl.x+targetEl.width/2;
-    const targetCenterY=targetEl.y+targetEl.height/2;
-
-    // Check if the elements are already connected
-    if ( !areElementsConnected( sourceEl.id, targetEl.id ) )
-    {
-      addBoundArrowBetween( sourceEl, targetEl, arrowOptions );
-    }
-
-    // Recursively create arrows for the child's children
-    if ( child.children.length>0 )
-    {
-      createArrows( child );
-    }
-  }
+    // IMPORTANT: inherit these from an existing arrow, not a text node
+    strokeColor: a?.strokeColor ?? app.currentItemStrokeColor ?? '#000000',
+    strokeWidth: a?.strokeWidth ?? app.currentItemStrokeWidth ?? 1,
+    strokeStyle: a?.strokeStyle ?? app.currentItemStrokeStyle ?? 'solid',
+    strokeSharpness:
+      a?.strokeSharpness ?? app.currentItemStrokeSharpness ?? 'sharp',
+    roughness: a?.roughness ?? app.currentItemRoughness ?? 0,
+  };
 }
