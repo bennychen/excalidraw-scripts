@@ -814,21 +814,109 @@ if (
 }
 
 // -----------------------------------------------------
-// Single element selected (connected): default outline/group,
-// BUT only show Add Child/Sibling when Ctrl/Cmd is held.
+// Single element selected: show an action menu (no Ctrl/Cmd gating)
+// Actions: Group / Copy / Add Child / Add Sibling / Optimize layout
 // -----------------------------------------------------
 if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
   snapshot = snapshotCanvas();
   const rootElement = selectedElements[0];
 
-  if (isCtrlOrCmdPressed()) {
-    const res = await insertChildOrSiblingFlow(rootElement, snapshot);
-    if (res && res.didInsert) return;
-    if (!(res && res.forceOutline)) return; // canceled chooser -> do nothing
-    // else: fall through to default outline
+  // -----------------------
+  // Helpers: traverse subtree
+  // -----------------------
+  function getChildTriples(parentEl, snap) {
+    // returns [{ childEl, arrowEl }]
+    const outgoing = snap.outgoingArrows.get(parentEl.id) || [];
+    const triples = [];
+
+    for (const a of outgoing) {
+      if (!a || a.isDeleted) continue;
+      const childId = a.endBinding?.elementId;
+      if (!childId) continue;
+
+      const childEl = snap.byId.get(childId);
+      if (!childEl) continue;
+      if (childEl.type === 'arrow' || childEl.type === 'line') continue;
+
+      // mindmap grammar: left -> right
+      if (childEl.x > parentEl.x) {
+        triples.push({ childEl, arrowEl: a });
+      }
+    }
+
+    triples.sort((t1, t2) => (t1.childEl.y || 0) - (t2.childEl.y || 0));
+    return triples;
   }
 
-  function getChildElements(element, snap, visited) {
+  function collectSubtree(rootEl, snap) {
+    const visited = new Set();
+    const nodes = []; // element objects (non-arrow/line)
+    const edges = []; // { parentId, childId, arrowId }
+
+    function dfs(el) {
+      if (!el || visited.has(el.id)) return;
+      visited.add(el.id);
+
+      nodes.push(el);
+
+      const triples = getChildTriples(el, snap);
+      for (const t of triples) {
+        edges.push({
+          parentId: el.id,
+          childId: t.childEl.id,
+          arrowId: t.arrowEl?.id || null,
+        });
+        dfs(t.childEl);
+      }
+    }
+
+    dfs(rootEl);
+    return { nodes, edges };
+  }
+
+  // -----------------------
+  // Helpers: build outline
+  // -----------------------
+  function buildOutline(element, snap, visited = new Set(), depth = 0) {
+    if (!element || visited.has(element.id)) return '';
+    visited.add(element.id);
+
+    let label = element.text?.trim() ?? `Element ${element.id}`;
+    label = String(label).replace(/\r?\n/g, ' ');
+
+    const indent = '\t'.repeat(depth);
+    const useDash = settings['Add dash bullet'].value;
+    const bulletPrefix = useDash ? '- ' : '';
+
+    let outline = `${indent}${bulletPrefix}${label}\n`;
+
+    const triples = getChildTriples(element, snap);
+    for (const t of triples) {
+      outline += buildOutline(t.childEl, snap, visited, depth + 1);
+    }
+    return outline;
+  }
+
+  async function doCopyOutline(rootEl, snap) {
+    const bulletText = buildOutline(rootEl, snap);
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(bulletText);
+        new Notice('Mindmap text copied to clipboard!');
+      } else {
+        ea.setClipboard(bulletText);
+        new Notice('Mindmap text copied to plugin clipboard!');
+      }
+    } catch (_e) {
+      new Notice('Error copying mindmap text to clipboard!');
+    }
+  }
+
+  // -----------------------
+  // Helpers: group subtree
+  // -----------------------
+  function getChildElementsForGrouping(element, snap, visited) {
     visited = visited || new Set();
     let children = [];
 
@@ -837,61 +925,45 @@ if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
 
     const outgoing = snap.outgoingArrows.get(element.id) || [];
     for (const arrow of outgoing) {
+      if (!arrow || arrow.isDeleted) continue;
       const endId = arrow.endBinding?.elementId;
       const endElement = endId ? snap.byId.get(endId) : null;
 
       if (endElement && endElement.x > element.x) {
         children.push(endElement);
         children.push(arrow);
-        children = children.concat(getChildElements(endElement, snap, visited));
+        children = children.concat(
+          getChildElementsForGrouping(endElement, snap, visited)
+        );
       }
     }
 
     return children;
   }
 
-  function buildOutline(element, snap, visited = new Set(), depth = 0) {
-    if (visited.has(element.id)) return '';
-    visited.add(element.id);
+  async function doGroupSubtree(rootEl, snap) {
+    const childElements = getChildElementsForGrouping(rootEl, snap);
+    const elementsToGroup = [rootEl].concat(childElements);
 
-    let label = element.text?.trim() ?? `Element ${element.id}`;
-    label = label.replace(/\r?\n/g, ' ');
+    // de-dupe
+    const uniq = new Map();
+    for (const el of elementsToGroup) if (el && el.id) uniq.set(el.id, el);
+    const uniqElementsToGroup = Array.from(uniq.values());
 
-    const indent = '\t'.repeat(depth);
-    const useDash = settings['Add dash bullet'].value;
-    const bulletPrefix = useDash ? '- ' : '';
+    const elementIdsToGroup = uniqElementsToGroup
+      .filter(el => el.type !== 'arrow' && el.type !== 'line')
+      .map(el => el.id);
 
-    let outline = `${indent}${bulletPrefix}${label}\n`;
-
-    const outgoing = snap.outgoingArrows.get(element.id) || [];
-    const childShapes = [];
-    for (const arrow of outgoing) {
-      const childId = arrow.endBinding?.elementId;
-      const childEl = childId ? snap.byId.get(childId) : null;
-      if (childEl && childEl.x > element.x) childShapes.push(childEl);
-    }
-
-    childShapes.sort((a, b) => a.y - b.y);
-
-    for (const childEl of childShapes) {
-      outline += buildOutline(childEl, snap, visited, depth + 1);
-    }
-
-    return outline;
-  }
-
-  const childElements = getChildElements(rootElement, snapshot);
-  if (childElements.length > 0) {
-    const elementsToGroup = [rootElement].concat(childElements);
-    const elementIdsToGroup = elementsToGroup.map(el => el.id);
     const addBox = settings['Box selected'].value;
 
     if (addBox) {
-      const box = ea.getBoundingBox(elementsToGroup);
+      const box = ea.getBoundingBox(uniqElementsToGroup);
       const padding = 5;
       const color = ea.getExcalidrawAPI().getAppState().currentItemStrokeColor;
+
       ea.style.strokeColor = color;
       ea.style.roundness = { type: 2, value: padding };
+
       const boxId = ea.addRect(
         box.topX - padding,
         box.topY - padding,
@@ -908,31 +980,384 @@ if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
         }
       } catch (_e) {}
 
-      ea.copyViewElementsToEAforEditing(elementsToGroup);
+      ea.copyViewElementsToEAforEditing(uniqElementsToGroup);
       ea.addToGroup([boxId].concat(elementIdsToGroup));
     } else {
-      ea.copyViewElementsToEAforEditing(elementsToGroup);
+      ea.copyViewElementsToEAforEditing(uniqElementsToGroup);
       ea.addToGroup(elementIdsToGroup);
     }
 
     await ea.addElementsToView(false, false, true);
-    new Notice(`Grouped ${elementsToGroup.length} elements.`);
-  } else {
-    new Notice('No child elements found for the selected element.');
+    new Notice(`Grouped ${uniqElementsToGroup.length} elements.`);
   }
 
-  const bulletText = buildOutline(rootElement, snapshot);
+  // -----------------------
+  // Helpers: Add child / sibling (no Ctrl/Cmd required)
+  // -----------------------
+  async function insertNodeFlow(
+    selectedEl,
+    snap,
+    mode /* 'child'|'sibling' */
+  ) {
+    const label = await utils.inputPrompt(
+      mode === 'child' ? 'Add child node' : 'Add sibling node',
+      'Enter node text',
+      '',
+      [
+        { caption: 'Confirm', action: input => (input || '').trim() },
+        { caption: 'Cancel', action: () => null },
+      ]
+    );
 
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(bulletText);
-      new Notice('Mindmap text copied to clipboard!');
-    } else {
-      ea.setClipboard(bulletText);
-      new Notice('Mindmap text copied to plugin clipboard!');
+    if (label === null || label === undefined) return;
+    if (label === '') return; // handled but no-op
+
+    const xSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
+    const ySpacing = parseFloat(settings['Vertical spacing'].value) || 100;
+
+    // Local helpers (same as your existing logic)
+    function getRightChildren(parentEl, snap2) {
+      const outgoing = snap2.outgoingArrows.get(parentEl.id) || [];
+      const children = [];
+      for (const a of outgoing) {
+        const childId = a.endBinding?.elementId;
+        if (!childId) continue;
+        const childEl = snap2.byId.get(childId);
+        if (!childEl) continue;
+        if (childEl.x > parentEl.x) children.push(childEl);
+      }
+      children.sort((a, b) => a.y - b.y);
+      return children;
     }
-  } catch (_e) {
-    new Notice('Error copying bullet text to clipboard!');
+
+    function getParentFromLeft(childEl, snap2) {
+      const incoming = snap2.incomingArrows.get(childEl.id) || [];
+      const candidates = [];
+      for (const a of incoming) {
+        const pId = a.startBinding?.elementId;
+        if (!pId) continue;
+        const pEl = snap2.byId.get(pId);
+        if (!pEl) continue;
+        if (pEl.x < childEl.x) candidates.push(pEl);
+      }
+      if (candidates.length === 0) return null;
+      candidates.sort((a, b) => b.x - a.x); // closest from left
+      return candidates[0];
+    }
+
+    let sourceEl = null; // arrow start
+    let newX = 0;
+    let newY = 0;
+
+    if (mode === 'child') {
+      sourceEl = selectedEl;
+      const existingChildren = getRightChildren(selectedEl, snap);
+      if (existingChildren.length > 0) {
+        newX = existingChildren[0].x;
+        newY = existingChildren[existingChildren.length - 1].y + ySpacing;
+      } else {
+        newX = selectedEl.x + selectedEl.width + xSpacing;
+        newY = selectedEl.y;
+      }
+    } else {
+      const parentEl = getParentFromLeft(selectedEl, snap);
+      if (!parentEl) {
+        new Notice(
+          "No parent found (selected looks like the root). Use 'Add child' instead."
+        );
+        return;
+      }
+
+      sourceEl = parentEl;
+      const siblings = getRightChildren(parentEl, snap);
+      if (siblings.length > 0) {
+        newX = siblings[0].x;
+        newY = siblings[siblings.length - 1].y + ySpacing;
+      } else {
+        newX = parentEl.x + parentEl.width + xSpacing;
+        newY = parentEl.y;
+      }
+    }
+
+    // Make sure source is editable (reliable connectObjects behavior)
+    try {
+      ea.copyViewElementsToEAforEditing([sourceEl]);
+    } catch (_e) {}
+
+    const textOptions = makeTextOptionsFromSource(selectedEl);
+    const arrowOptions = makeArrowOptionsFromSource(sourceEl, snap);
+
+    const newId = ea.addText(newX, newY, label, textOptions);
+    const newEl = ea.getElement(newId);
+
+    if (newEl) {
+      addBoundArrowBetween(sourceEl, newEl, arrowOptions);
+    } else {
+      // rare fallback
+      try {
+        ea.connectObjects(sourceEl.id, 'right', newId, 'left', {
+          numberOfPoints: arrowOptions.numberOfPoints,
+          startArrowHead: arrowOptions.startArrowHead,
+          endArrowHead: arrowOptions.endArrowHead,
+          padding: 0,
+        });
+      } catch (_e) {}
+    }
+
+    await ea.addElementsToView(false, false, true);
+    new Notice(mode === 'child' ? 'Added child node.' : 'Added sibling node.');
+  }
+
+  // -----------------------
+  // Optimize layout: re-layout existing subtree (no re-create)
+  // Similar to bullet->mindmap layout, but anchored to current root position.
+  // -----------------------
+  async function optimizeLayout(rootEl, snap) {
+    // Refresh snapshot so we use current bindings/positions
+    snap = snapshotCanvas();
+
+    const xSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
+    const ySpacing = parseFloat(settings['Vertical spacing'].value) || 100;
+
+    const { nodes, edges } = collectSubtree(rootEl, snap);
+
+    if (!nodes || nodes.length <= 1) {
+      new Notice('Nothing to optimize (no children found).');
+      return;
+    }
+
+    // Build tree structure (ids only)
+    const byId = new Map(nodes.map(n => [n.id, n]));
+    const childrenByParent = new Map(); // parentId -> childIds[]
+    for (const e of edges) {
+      if (!childrenByParent.has(e.parentId))
+        childrenByParent.set(e.parentId, []);
+      childrenByParent.get(e.parentId).push(e.childId);
+    }
+
+    // Stable child order by current Y
+    for (const [pId, childIds] of childrenByParent.entries()) {
+      childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+    }
+
+    function countLeaves(id) {
+      const kids = childrenByParent.get(id) || [];
+      if (kids.length === 0) return 1;
+      let sum = 0;
+      for (const k of kids) sum += countLeaves(k);
+      return sum;
+    }
+
+    // Layout positions (top-left x,y)
+    const pos = new Map(); // id -> {x,y}
+
+    const rootAnchorCenterY = rootEl.y + rootEl.height / 2;
+    const leafCount = countLeaves(rootEl.id);
+    const estimatedTotalHeight = (leafCount - 1) * ySpacing;
+
+    let nextLeafY = rootAnchorCenterY - estimatedTotalHeight / 2;
+
+    function assignY(id) {
+      const kids = childrenByParent.get(id) || [];
+      const el = byId.get(id);
+      if (!el) return;
+
+      if (kids.length === 0) {
+        pos.set(id, { x: el.x, y: nextLeafY });
+        nextLeafY += ySpacing;
+        return;
+      }
+
+      for (const k of kids) assignY(k);
+
+      const first = pos.get(kids[0]);
+      const last = pos.get(kids[kids.length - 1]);
+      pos.set(id, { x: el.x, y: (first.y + last.y) / 2 });
+    }
+
+    assignY(rootEl.id);
+
+    function assignX(id, x) {
+      const el = byId.get(id);
+      if (!el) return;
+
+      const p = pos.get(id) || { x: el.x, y: el.y };
+      p.x = x;
+      pos.set(id, p);
+
+      const kids = childrenByParent.get(id) || [];
+      const childX = x + (el.width || 0) + xSpacing;
+      for (const k of kids) assignX(k, childX);
+    }
+
+    // Root stays at current X (and we will keep its Y too)
+    assignX(rootEl.id, rootEl.x);
+
+    const computedRoot = pos.get(rootEl.id);
+    if (!computedRoot) {
+      new Notice('Optimize layout failed: could not compute root position.');
+      return;
+    }
+
+    // Preserve root top-left Y by shifting the whole subtree
+    const deltaY = rootEl.y - computedRoot.y;
+    for (const [id, p] of pos.entries()) {
+      p.y += deltaY;
+      pos.set(id, p);
+    }
+
+    // Prepare edit set: all nodes + all arrows in subtree
+    const arrowIds = edges.map(e => e.arrowId).filter(Boolean);
+
+    const liveNodeEls = nodes
+      .map(n => ea.getElement(n.id) || n)
+      .filter(Boolean);
+    const liveArrowEls = arrowIds
+      .map(id => ea.getElement(id) || snap.byId.get(id))
+      .filter(a => a && a.type === 'arrow');
+
+    const editSet = (() => {
+      const m = new Map();
+      for (const el of [].concat(liveNodeEls, liveArrowEls)) {
+        if (el && el.id) m.set(el.id, el);
+      }
+      return Array.from(m.values());
+    })();
+
+    try {
+      ea.copyViewElementsToEAforEditing(editSet);
+    } catch (_e) {
+      new Notice(
+        'Optimize layout failed: could not enter edit mode for elements.'
+      );
+      return;
+    }
+
+    // IMPORTANT: mutate the EA-editable clones, not the snapshot objects.
+    let moved = 0;
+    for (const n of nodes) {
+      const p = pos.get(n.id);
+      if (!p) continue;
+
+      const ed = ea.getElement(n.id);
+      if (!ed) continue;
+
+      if (ed.x !== p.x || ed.y !== p.y) {
+        ed.x = p.x;
+        ed.y = p.y;
+        moved++;
+      }
+    }
+
+    // ---- Arrow cleanup: straighten/re-route arrows after node movement ----
+    function straightenArrowBetween(parentEl, childEl, arrowEl) {
+      if (!parentEl || !childEl || !arrowEl) return;
+
+      const parentCx = parentEl.x + parentEl.width / 2;
+      const childCx = childEl.x + childEl.width / 2;
+      const goRight = childCx >= parentCx;
+
+      const startAbs = goRight
+        ? [parentEl.x + parentEl.width, parentEl.y + parentEl.height / 2]
+        : [parentEl.x, parentEl.y + parentEl.height / 2];
+
+      const endAbs = goRight
+        ? [childEl.x, childEl.y + childEl.height / 2]
+        : [childEl.x + childEl.width, childEl.y + childEl.height / 2];
+
+      // Keep bindings centered on the edge midpoints (best-effort)
+      try {
+        if (arrowEl.startBinding) {
+          arrowEl.startBinding.focus = 0;
+          if (arrowEl.startBinding.fixedPoint)
+            arrowEl.startBinding.fixedPoint = goRight ? [1, 0.5] : [0, 0.5];
+        }
+        if (arrowEl.endBinding) {
+          arrowEl.endBinding.focus = 0;
+          if (arrowEl.endBinding.fixedPoint)
+            arrowEl.endBinding.fixedPoint = goRight ? [0, 0.5] : [1, 0.5];
+        }
+      } catch (_e) {}
+
+      // Reset geometry to a clean 2-point line (removes messy bends)
+      const minX = Math.min(startAbs[0], endAbs[0]);
+      const minY = Math.min(startAbs[1], endAbs[1]);
+
+      arrowEl.x = minX;
+      arrowEl.y = minY;
+
+      const p0 = [startAbs[0] - minX, startAbs[1] - minY];
+      const p1 = [endAbs[0] - minX, endAbs[1] - minY];
+
+      arrowEl.points = [p0, p1];
+    }
+
+    let straightened = 0;
+
+    // Use edges list (parentId -> childId) to straighten each subtree arrow
+    for (const e of edges) {
+      if (!e.arrowId) continue;
+
+      const a = ea.getElement(e.arrowId);
+      if (!a || a.type !== 'arrow') continue;
+
+      const pEl = ea.getElement(e.parentId);
+      const cEl = ea.getElement(e.childId);
+      if (!pEl || !cEl) continue;
+
+      straightenArrowBetween(pEl, cEl, a);
+      straightened++;
+    }
+
+    await ea.addElementsToView(false, false, true);
+    new Notice(
+      `Optimized layout. Moved ${moved} node(s), straightened ${straightened} arrow(s).`
+    );
+  }
+
+  // -----------------------
+  // Action menu (no Ctrl/Cmd required)
+  // -----------------------
+  const action = await utils.suggester(
+    [
+      'Group',
+      'Copy to clipboard',
+      'Add Child',
+      'Add Sibling',
+      'Optimize layout',
+    ],
+    ['group', 'copy', 'child', 'sibling', 'optimize'],
+    'Choose action'
+  );
+
+  if (action === null) return;
+
+  // Refresh snapshot before acting (selection might be stale)
+  snapshot = snapshotCanvas();
+
+  if (action === 'group') {
+    await doGroupSubtree(rootElement, snapshot);
+    return;
+  }
+
+  if (action === 'copy') {
+    await doCopyOutline(rootElement, snapshot);
+    return;
+  }
+
+  if (action === 'child') {
+    await insertNodeFlow(rootElement, snapshot, 'child');
+    return;
+  }
+
+  if (action === 'sibling') {
+    await insertNodeFlow(rootElement, snapshot, 'sibling');
+    return;
+  }
+
+  if (action === 'optimize') {
+    await optimizeLayout(rootElement, snapshot);
+    return;
   }
 
   return;
