@@ -478,45 +478,80 @@ function addBoundArrowBetween(
 // -----------------------------------------------------
 function getChildTriples(parentEl, snap, mindmapDir, mindmapRoot) {
   const outgoing = snap.outgoingArrows.get(parentEl.id) || [];
-  const triples = [];
+  const all = [];
 
   for (const a of outgoing) {
     if (!a || a.isDeleted) continue;
     const cId = a.endBinding?.elementId;
     if (!cId) continue;
     const cEl = snap.byId.get(cId);
-    if (!cEl) continue;
+    if (!cEl || cEl.isDeleted) continue;
     if (cEl.type === 'arrow' || cEl.type === 'line') continue;
 
-    if (mindmapDir === 'LR') {
-      if (centerX(cEl) > centerX(parentEl))
-        triples.push({ childEl: cEl, arrowEl: a });
-    } else if (mindmapDir === 'RL') {
-      if (centerX(cEl) < centerX(parentEl))
-        triples.push({ childEl: cEl, arrowEl: a });
-    } else {
-      // BI
-      if (!mindmapRoot) {
-        triples.push({ childEl: cEl, arrowEl: a });
-      } else if (parentEl.id === mindmapRoot.id) {
-        triples.push({ childEl: cEl, arrowEl: a });
-      } else {
-        const pSide = getNodeSide(parentEl, mindmapRoot);
-        if (pSide === 'L') {
-          if (centerX(cEl) < centerX(parentEl))
-            triples.push({ childEl: cEl, arrowEl: a });
-        } else if (pSide === 'R') {
-          if (centerX(cEl) > centerX(parentEl))
-            triples.push({ childEl: cEl, arrowEl: a });
-        } else {
-          triples.push({ childEl: cEl, arrowEl: a });
-        }
+    all.push({ childEl: cEl, arrowEl: a });
+  }
+
+  // ---------- LR / RL ----------
+  if (mindmapDir === 'LR') {
+    const filtered = all.filter(t => centerX(t.childEl) > centerX(parentEl));
+    filtered.sort((a, b) => a.childEl.y - b.childEl.y);
+    return filtered;
+  }
+
+  if (mindmapDir === 'RL') {
+    const filtered = all.filter(t => centerX(t.childEl) < centerX(parentEl));
+    filtered.sort((a, b) => a.childEl.y - b.childEl.y);
+    return filtered;
+  }
+
+  // ---------- BI ----------
+  // Root: left(top→down) then right(top→down)
+  if (mindmapRoot && parentEl.id === mindmapRoot.id) {
+    const left = [];
+    const right = [];
+
+    // classify by current X relative to root center
+    const rootCx = centerX(mindmapRoot);
+    for (const t of all) {
+      const side = centerX(t.childEl) < rootCx ? 'L' : 'R';
+      (side === 'L' ? left : right).push(t);
+    }
+
+    left.sort((a, b) => a.childEl.y - b.childEl.y);
+    right.sort((a, b) => a.childEl.y - b.childEl.y);
+
+    // If everything is on one side, BI degenerates -> auto split by Y alternating
+    if (left.length === 0 || right.length === 0) {
+      const merged = all.slice().sort((a, b) => a.childEl.y - b.childEl.y);
+      const L = [];
+      const R = [];
+      for (let i = 0; i < merged.length; i++) {
+        (i % 2 === 0 ? R : L).push(merged[i]); // R, L, R, L...
       }
+      return L.concat(R); // left first, then right (as requested)
+    }
+
+    return left.concat(right);
+  }
+
+  // Non-root: children must continue outward on the same side as the parent
+  if (mindmapRoot) {
+    const pSide = getNodeSide(parentEl, mindmapRoot); // 'L'|'R'|'C'
+    if (pSide === 'L') {
+      const filtered = all.filter(t => centerX(t.childEl) < centerX(parentEl));
+      filtered.sort((a, b) => a.childEl.y - b.childEl.y);
+      return filtered;
+    }
+    if (pSide === 'R') {
+      const filtered = all.filter(t => centerX(t.childEl) > centerX(parentEl));
+      filtered.sort((a, b) => a.childEl.y - b.childEl.y);
+      return filtered;
     }
   }
 
-  triples.sort((a, b) => a.childEl.y - b.childEl.y);
-  return triples;
+  // Fallback: stable
+  all.sort((a, b) => a.childEl.y - b.childEl.y);
+  return all;
 }
 
 // For BI optimize root, we must include all outgoing edges regardless of current X,
