@@ -41,11 +41,11 @@ const defaultSettings = {
   'Horizontal spacing': {
     value: 200,
     description:
-      "Horizontal distance between levels (from parent's right to child's left)",
+      'Horizontal distance between levels (parent edge to child edge). Used for LR/RL/BI.',
   },
   'Vertical spacing': {
     value: 100,
-    description: 'Vertical spacing between sibling nodes',
+    description: 'Vertical spacing between sibling nodes. Used for LR/RL/BI.',
   },
 };
 
@@ -60,92 +60,6 @@ for (const key in defaultSettings) {
 }
 
 ea.setScriptSettings(settings);
-
-// -----------------------------------------------------
-// Key state tracker (CTRL/CMD gating for insert menu)
-// -----------------------------------------------------
-function ensureMindmapKeyTracker() {
-  if (window.__mindmapKeyTrackerInstalled) return;
-
-  window.__mindmapKeyState = window.__mindmapKeyState || {
-    ctrl: false,
-    meta: false,
-    shift: false,
-    alt: false,
-    lastCtrlOrMetaDownAt: 0,
-  };
-
-  const updateFromEvent = (e, isDown) => {
-    try {
-      if (e.key === 'Control') window.__mindmapKeyState.ctrl = isDown;
-      if (e.key === 'Meta') window.__mindmapKeyState.meta = isDown;
-      if (e.key === 'Shift') window.__mindmapKeyState.shift = isDown;
-      if (e.key === 'Alt') window.__mindmapKeyState.alt = isDown;
-
-      // Modifier flags are often more reliable in Obsidian
-      if (typeof e.ctrlKey === 'boolean')
-        window.__mindmapKeyState.ctrl = e.ctrlKey;
-      if (typeof e.metaKey === 'boolean')
-        window.__mindmapKeyState.meta = e.metaKey;
-      if (typeof e.shiftKey === 'boolean')
-        window.__mindmapKeyState.shift = e.shiftKey;
-      if (typeof e.altKey === 'boolean')
-        window.__mindmapKeyState.alt = e.altKey;
-
-      if (
-        isDown &&
-        (window.__mindmapKeyState.ctrl || window.__mindmapKeyState.meta)
-      ) {
-        window.__mindmapKeyState.lastCtrlOrMetaDownAt = Date.now();
-      }
-    } catch (_e) {
-      // ignore
-    }
-  };
-
-  const onKeyDown = e => updateFromEvent(e, true);
-  const onKeyUp = e => updateFromEvent(e, false);
-  const onBlur = () => {
-    window.__mindmapKeyState.ctrl = false;
-    window.__mindmapKeyState.meta = false;
-    window.__mindmapKeyState.shift = false;
-    window.__mindmapKeyState.alt = false;
-  };
-
-  window.addEventListener('keydown', onKeyDown, true);
-  window.addEventListener('keyup', onKeyUp, true);
-  window.addEventListener('blur', onBlur, true);
-
-  document.addEventListener('keydown', onKeyDown, true);
-  document.addEventListener('keyup', onKeyUp, true);
-
-  window.__mindmapKeyTrackerInstalled = true;
-}
-
-function isCtrlOrCmdPressed() {
-  ensureMindmapKeyTracker();
-
-  const st = window.__mindmapKeyState;
-  if (st && (st.ctrl || st.meta)) return true;
-
-  // Recent window helps for “hold ctrl, click, then run command” workflows
-  const RECENT_MS = 700;
-  if (
-    st &&
-    st.lastCtrlOrMetaDownAt &&
-    Date.now() - st.lastCtrlOrMetaDownAt <= RECENT_MS
-  ) {
-    return true;
-  }
-
-  // Fallback: sometimes the triggering event is accessible
-  try {
-    const ev = window.event;
-    if (ev && (ev.ctrlKey || ev.metaKey)) return true;
-  } catch (_e) {}
-
-  return false;
-}
 
 // -----------------------------------------------------
 // Selected elements
@@ -226,7 +140,7 @@ function hasConnections(el, snap) {
 }
 
 // -----------------------------------------------------
-// Style helpers (fix “sloppiness” mismatch)
+// Style helpers
 // -----------------------------------------------------
 function normalizeArrowHead(v) {
   if (v === undefined || v === null) return null;
@@ -235,7 +149,6 @@ function normalizeArrowHead(v) {
 }
 
 function pickArrowStyleFor(sourceEl, snap) {
-  // Prefer an arrow that is already connected to this node
   const candidates = []
     .concat(snap.outgoingArrows.get(sourceEl.id) || [])
     .concat(snap.incomingArrows.get(sourceEl.id) || []);
@@ -243,7 +156,6 @@ function pickArrowStyleFor(sourceEl, snap) {
   const hit = candidates.find(a => a.type === 'arrow' && !a.isDeleted);
   if (hit) return hit;
 
-  // Fallback: any arrow on the canvas
   return (snap.arrows || []).find(a => !a.isDeleted) || null;
 }
 
@@ -264,7 +176,6 @@ function makeArrowOptionsFromSource(sourceEl, snap) {
     ),
     numberOfPoints: Math.floor(settings['Line points'].value) || 0,
 
-    // Inherit “sloppiness” / stroke from an existing arrow
     strokeColor: a?.strokeColor ?? app.currentItemStrokeColor ?? '#000000',
     strokeWidth: a?.strokeWidth ?? app.currentItemStrokeWidth ?? 1,
     strokeStyle: a?.strokeStyle ?? app.currentItemStrokeStyle ?? 'solid',
@@ -275,7 +186,6 @@ function makeArrowOptionsFromSource(sourceEl, snap) {
 }
 
 function makeArrowOptionsFromContext(snap, preferredEls = []) {
-  // Use any arrow connected to any preferred element; else any arrow; else appState
   let a = null;
   for (const el of preferredEls) {
     a = pickArrowStyleFor(el, snap);
@@ -325,16 +235,191 @@ function makeTextOptionsFromSource(sourceEl) {
 }
 
 // -----------------------------------------------------
-// Create a bound arrow between two elements (edge centers)
+// Per-mindmap direction metadata (stored on root node)
+// - customData.mindmap.dir: 'LR' | 'RL' | 'BI'
+// - fallback link: mindmap://dir=LR|RL|BI (only if link empty or already mindmap link)
+// - default: LR
 // -----------------------------------------------------
-function addBoundArrowBetween(sourceEl, targetEl, style = {}) {
-  const sourceCenterX = sourceEl.x + sourceEl.width / 2;
-  const targetCenterX = targetEl.x + targetEl.width / 2;
+function normalizeDir(v) {
+  const x = String(v || '')
+    .toUpperCase()
+    .trim();
+  if (x === 'LR' || x === 'RL' || x === 'BI') return x;
+  return null;
+}
 
-  // Always connect horizontally for mindmaps
-  const goRight = targetCenterX >= sourceCenterX;
-  const sourceSide = goRight ? 'right' : 'left';
-  const targetSide = goRight ? 'left' : 'right';
+function tryReadDirFromCustomData(el) {
+  try {
+    const d = el?.customData?.mindmap?.dir;
+    return normalizeDir(d);
+  } catch (_e) {
+    return null;
+  }
+}
+
+function tryReadDirFromLink(el) {
+  const link = el?.link;
+  if (!link || typeof link !== 'string') return null;
+
+  const m = link.match(/^(mindmap|mm):\/\/(.+)$/i);
+  if (!m) return null;
+
+  const tail = m[2] || '';
+  const m2 = tail.match(/(?:\b|\?|&)dir\s*=\s*(LR|RL|BI)\b/i);
+  if (m2) return normalizeDir(m2[1]);
+
+  const m3 = tail.match(/^(LR|RL|BI)$/i);
+  if (m3) return normalizeDir(m3[1]);
+
+  return null;
+}
+
+function tryReadDirFromText(el) {
+  const t = (el?.text || '').toString();
+  const m = t.match(/\bdir\s*[:=]\s*(LR|RL|BI)\b/i);
+  return m ? normalizeDir(m[1]) : null;
+}
+
+function readMindmapDirFromRoot(rootEl) {
+  return (
+    tryReadDirFromCustomData(rootEl) ||
+    tryReadDirFromLink(rootEl) ||
+    tryReadDirFromText(rootEl) ||
+    'LR'
+  );
+}
+
+function writeMindmapDirToRoot_EDITABLE(rootElEditable, dir) {
+  const d = normalizeDir(dir) || 'LR';
+
+  try {
+    rootElEditable.customData = rootElEditable.customData || {};
+    rootElEditable.customData.mindmap = rootElEditable.customData.mindmap || {};
+    rootElEditable.customData.mindmap.dir = d;
+  } catch (_e) {}
+
+  try {
+    const link = rootElEditable.link;
+    const isMindmapLink =
+      typeof link === 'string' && /^(mindmap|mm):\/\//i.test(link || '');
+    if (!link || isMindmapLink) {
+      rootElEditable.link = `mindmap://dir=${d}`;
+    }
+  } catch (_e) {}
+}
+
+// -----------------------------------------------------
+// Geometry helpers
+// -----------------------------------------------------
+function centerX(el) {
+  return el.x + el.width / 2;
+}
+function centerY(el) {
+  return el.y + el.height / 2;
+}
+
+function getAxisSpacing() {
+  const levelSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
+  const siblingSpacing = parseFloat(settings['Vertical spacing'].value) || 100;
+  return { levelSpacing, siblingSpacing };
+}
+
+function getSidesForDir(dirLRorRL) {
+  if (dirLRorRL === 'RL') {
+    return {
+      parentSide: 'left',
+      childSide: 'right',
+      fpStart: [0, 0.5],
+      fpEnd: [1, 0.5],
+    };
+  }
+  return {
+    parentSide: 'right',
+    childSide: 'left',
+    fpStart: [1, 0.5],
+    fpEnd: [0, 0.5],
+  };
+}
+
+function edgeCenter(el, side) {
+  if (side === 'left') return [el.x, el.y + el.height / 2];
+  return [el.x + el.width, el.y + el.height / 2]; // right
+}
+
+function getNodeSide(el, rootEl) {
+  const dx = centerX(el) - centerX(rootEl);
+  const EPS = 2;
+  if (dx > EPS) return 'R';
+  if (dx < -EPS) return 'L';
+  return 'C';
+}
+
+// -----------------------------------------------------
+// Find mindmap root (walk parents by incoming arrows)
+// -----------------------------------------------------
+function getParentsOfNode(childEl, snap) {
+  const incoming = snap.incomingArrows.get(childEl.id) || [];
+  const parents = [];
+  for (const a of incoming) {
+    if (!a || a.isDeleted) continue;
+    const pId = a.startBinding?.elementId;
+    if (!pId) continue;
+    const pEl = snap.byId.get(pId);
+    if (!pEl) continue;
+    if (pEl.type === 'arrow' || pEl.type === 'line') continue;
+    parents.push({ parentEl: pEl, arrowEl: a });
+  }
+  return parents;
+}
+
+function pickBestParent(childEl, snap) {
+  const ps = getParentsOfNode(childEl, snap);
+  if (ps.length === 0) return null;
+
+  let best = ps[0];
+  let bestD = Infinity;
+
+  for (const p of ps) {
+    const dx = centerX(p.parentEl) - centerX(childEl);
+    const dy = centerY(p.parentEl) - centerY(childEl);
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestD) {
+      bestD = d2;
+      best = p;
+    }
+  }
+
+  return best.parentEl;
+}
+
+function findMindmapRoot(startEl, snap) {
+  const visited = new Set();
+  let cur = startEl;
+  while (cur && !visited.has(cur.id)) {
+    visited.add(cur.id);
+    const p = pickBestParent(cur, snap);
+    if (!p) return cur;
+    cur = p;
+  }
+  return cur || startEl;
+}
+
+function getMindmapDirAndRoot(anyNodeEl, snap) {
+  const root = findMindmapRoot(anyNodeEl, snap);
+  const dir = readMindmapDirFromRoot(root);
+  return { root, dir };
+}
+
+// -----------------------------------------------------
+// Create a bound arrow between two elements (dir = 'LR'|'RL')
+// -----------------------------------------------------
+function addBoundArrowBetween(
+  sourceEl,
+  targetEl,
+  style = {},
+  dirLRorRL = 'LR'
+) {
+  const { parentSide, childSide, fpStart, fpEnd } = getSidesForDir(dirLRorRL);
 
   const startArrowHead = normalizeArrowHead(style.startArrowHead);
   const endArrowHead = normalizeArrowHead(style.endArrowHead);
@@ -355,9 +440,9 @@ function addBoundArrowBetween(sourceEl, targetEl, style = {}) {
 
   const createdId = ea.connectObjects(
     sourceEl.id,
-    sourceSide,
+    parentSide,
     targetEl.id,
-    targetSide,
+    childSide,
     {
       numberOfPoints,
       startArrowHead,
@@ -366,73 +451,334 @@ function addBoundArrowBetween(sourceEl, targetEl, style = {}) {
     }
   );
 
-  // Best-effort centering on the edge midpoints
   try {
     if (createdId) {
       const a = ea.getElement(createdId);
       if (a && a.type === 'arrow') {
         if (a.startBinding) {
           a.startBinding.focus = 0;
-          if (a.startBinding.fixedPoint)
-            a.startBinding.fixedPoint = goRight ? [1, 0.5] : [0, 0.5];
+          if (a.startBinding.fixedPoint) a.startBinding.fixedPoint = fpStart;
         }
         if (a.endBinding) {
           a.endBinding.focus = 0;
-          if (a.endBinding.fixedPoint)
-            a.endBinding.fixedPoint = goRight ? [0, 0.5] : [1, 0.5];
+          if (a.endBinding.fixedPoint) a.endBinding.fixedPoint = fpEnd;
         }
       }
     }
-  } catch (_e) {
-    // ignore
-  }
+  } catch (_e) {}
 
   return createdId;
 }
 
 // -----------------------------------------------------
-// Insert child/sibling helpers (CTRL/CMD only)
+// Mindmap traversal (children)
+// - LR: only children to the right
+// - RL: only children to the left
+// - BI: root can have both; non-root children continue outward on their side
 // -----------------------------------------------------
-function getRightChildren(parentEl, snap) {
+function getChildTriples(parentEl, snap, mindmapDir, mindmapRoot) {
   const outgoing = snap.outgoingArrows.get(parentEl.id) || [];
-  const children = [];
+  const triples = [];
+
   for (const a of outgoing) {
-    const childId = a.endBinding?.elementId;
-    if (!childId) continue;
-    const childEl = snap.byId.get(childId);
-    if (!childEl) continue;
-    if (childEl.x > parentEl.x) children.push(childEl);
+    if (!a || a.isDeleted) continue;
+    const cId = a.endBinding?.elementId;
+    if (!cId) continue;
+    const cEl = snap.byId.get(cId);
+    if (!cEl) continue;
+    if (cEl.type === 'arrow' || cEl.type === 'line') continue;
+
+    if (mindmapDir === 'LR') {
+      if (centerX(cEl) > centerX(parentEl))
+        triples.push({ childEl: cEl, arrowEl: a });
+    } else if (mindmapDir === 'RL') {
+      if (centerX(cEl) < centerX(parentEl))
+        triples.push({ childEl: cEl, arrowEl: a });
+    } else {
+      // BI
+      if (!mindmapRoot) {
+        triples.push({ childEl: cEl, arrowEl: a });
+      } else if (parentEl.id === mindmapRoot.id) {
+        triples.push({ childEl: cEl, arrowEl: a });
+      } else {
+        const pSide = getNodeSide(parentEl, mindmapRoot);
+        if (pSide === 'L') {
+          if (centerX(cEl) < centerX(parentEl))
+            triples.push({ childEl: cEl, arrowEl: a });
+        } else if (pSide === 'R') {
+          if (centerX(cEl) > centerX(parentEl))
+            triples.push({ childEl: cEl, arrowEl: a });
+        } else {
+          triples.push({ childEl: cEl, arrowEl: a });
+        }
+      }
+    }
   }
-  children.sort((a, b) => a.y - b.y);
+
+  triples.sort((a, b) => a.childEl.y - b.childEl.y);
+  return triples;
+}
+
+// For BI optimize root, we must include all outgoing edges regardless of current X,
+// because we may move a whole branch to the other side.
+function getChildTriplesAllOut(parentEl, snap) {
+  const outgoing = snap.outgoingArrows.get(parentEl.id) || [];
+  const triples = [];
+  for (const a of outgoing) {
+    if (!a || a.isDeleted) continue;
+    const cId = a.endBinding?.elementId;
+    if (!cId) continue;
+    const cEl = snap.byId.get(cId);
+    if (!cEl) continue;
+    if (cEl.type === 'arrow' || cEl.type === 'line') continue;
+    triples.push({ childEl: cEl, arrowEl: a });
+  }
+  triples.sort((a, b) => a.childEl.y - b.childEl.y);
+  return triples;
+}
+
+function collectSubtree(subtreeRootEl, snap, mindmapDir, mindmapRoot) {
+  const visited = new Set();
+  const nodes = [];
+  const edges = []; // { parentId, childId, arrowId }
+
+  function dfs(el) {
+    if (!el || visited.has(el.id)) return;
+    visited.add(el.id);
+
+    nodes.push(el);
+
+    const triples = getChildTriples(el, snap, mindmapDir, mindmapRoot);
+    for (const t of triples) {
+      edges.push({
+        parentId: el.id,
+        childId: t.childEl.id,
+        arrowId: t.arrowEl?.id || null,
+      });
+      dfs(t.childEl);
+    }
+  }
+
+  dfs(subtreeRootEl);
+  return { nodes, edges };
+}
+
+function collectSubtreeAllOut(subtreeRootEl, snap) {
+  const visited = new Set();
+  const nodes = [];
+  const edges = [];
+
+  function dfs(el) {
+    if (!el || visited.has(el.id)) return;
+    visited.add(el.id);
+
+    nodes.push(el);
+
+    const triples = getChildTriplesAllOut(el, snap);
+    for (const t of triples) {
+      edges.push({
+        parentId: el.id,
+        childId: t.childEl.id,
+        arrowId: t.arrowEl?.id || null,
+      });
+      dfs(t.childEl);
+    }
+  }
+
+  dfs(subtreeRootEl);
+  return { nodes, edges };
+}
+
+// -----------------------------------------------------
+// Outline + clipboard (direction-aware)
+// -----------------------------------------------------
+function buildOutline(
+  element,
+  snap,
+  mindmapDir,
+  mindmapRoot,
+  visited = new Set(),
+  depth = 0
+) {
+  if (!element || visited.has(element.id)) return '';
+  visited.add(element.id);
+
+  let label = element.text?.trim() ?? `Element ${element.id}`;
+  label = String(label).replace(/\r?\n/g, ' ');
+
+  const indent = '\t'.repeat(depth);
+  const useDash = settings['Add dash bullet'].value;
+  const bulletPrefix = useDash ? '- ' : '';
+
+  let outline = `${indent}${bulletPrefix}${label}\n`;
+
+  const triples = getChildTriples(element, snap, mindmapDir, mindmapRoot);
+  for (const t of triples) {
+    outline += buildOutline(
+      t.childEl,
+      snap,
+      mindmapDir,
+      mindmapRoot,
+      visited,
+      depth + 1
+    );
+  }
+  return outline;
+}
+
+async function copyOutlineToClipboard(rootEl, snap, mindmapDir, mindmapRoot) {
+  const bulletText = buildOutline(rootEl, snap, mindmapDir, mindmapRoot);
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(bulletText);
+      new Notice('Mindmap text copied to clipboard!');
+    } else {
+      ea.setClipboard(bulletText);
+      new Notice('Mindmap text copied to plugin clipboard!');
+    }
+  } catch (_e) {
+    new Notice('Error copying mindmap text to clipboard!');
+  }
+}
+
+// -----------------------------------------------------
+// Group subtree (direction-aware)
+// -----------------------------------------------------
+function getChildElementsForGrouping(
+  element,
+  snap,
+  mindmapDir,
+  mindmapRoot,
+  visited
+) {
+  visited = visited || new Set();
+  let children = [];
+
+  if (visited.has(element.id)) return children;
+  visited.add(element.id);
+
+  const triples = getChildTriples(element, snap, mindmapDir, mindmapRoot);
+  for (const t of triples) {
+    children.push(t.childEl);
+    if (t.arrowEl) children.push(t.arrowEl);
+    children = children.concat(
+      getChildElementsForGrouping(
+        t.childEl,
+        snap,
+        mindmapDir,
+        mindmapRoot,
+        visited
+      )
+    );
+  }
+
   return children;
 }
 
-function getParentFromLeft(childEl, snap) {
-  const incoming = snap.incomingArrows.get(childEl.id) || [];
-  const candidates = [];
-  for (const a of incoming) {
-    const pId = a.startBinding?.elementId;
-    if (!pId) continue;
-    const pEl = snap.byId.get(pId);
-    if (!pEl) continue;
-    if (pEl.x < childEl.x) candidates.push(pEl);
+async function groupSubtree(rootEl, snap, mindmapDir, mindmapRoot) {
+  const childElements = getChildElementsForGrouping(
+    rootEl,
+    snap,
+    mindmapDir,
+    mindmapRoot
+  );
+  const elementsToGroup = [rootEl].concat(childElements);
+
+  const uniq = new Map();
+  for (const el of elementsToGroup) if (el && el.id) uniq.set(el.id, el);
+  const uniqElementsToGroup = Array.from(uniq.values());
+
+  const elementIdsToGroup = uniqElementsToGroup
+    .filter(el => el.type !== 'arrow' && el.type !== 'line')
+    .map(el => el.id);
+
+  const addBox = settings['Box selected'].value;
+
+  if (addBox) {
+    const box = ea.getBoundingBox(uniqElementsToGroup);
+    const padding = 5;
+    const color = ea.getExcalidrawAPI().getAppState().currentItemStrokeColor;
+
+    ea.style.strokeColor = color;
+    ea.style.roundness = { type: 2, value: padding };
+
+    const boxId = ea.addRect(
+      box.topX - padding,
+      box.topY - padding,
+      box.width + 2 * padding,
+      box.height + 2 * padding
+    );
+
+    try {
+      if (typeof ea.sendToBack === 'function') ea.sendToBack([boxId]);
+      else {
+        const api = ea.getExcalidrawAPI?.();
+        if (api && typeof api.sendToBack === 'function')
+          api.sendToBack([boxId]);
+      }
+    } catch (_e) {}
+
+    ea.copyViewElementsToEAforEditing(uniqElementsToGroup);
+    ea.addToGroup([boxId].concat(elementIdsToGroup));
+  } else {
+    ea.copyViewElementsToEAforEditing(uniqElementsToGroup);
+    ea.addToGroup(elementIdsToGroup);
   }
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.x - a.x); // closest from left
-  return candidates[0];
+
+  await ea.addElementsToView(false, false, true);
+  new Notice(`Grouped ${uniqElementsToGroup.length} elements.`);
 }
 
-async function insertChildOrSiblingFlow(selectedEl, snap) {
-  const choice = await utils.suggester(
-    ['Add child', 'Add sibling', 'Run default outline'],
-    ['child', 'sibling', 'outline'],
-    'CTRL/CMD held: quick action'
+// -----------------------------------------------------
+// Add Child / Add Sibling (direction-aware; BI chooses side)
+// -----------------------------------------------------
+function countRootChildrenSides(rootEl, snap) {
+  const outgoing = snap.outgoingArrows.get(rootEl.id) || [];
+  let left = 0;
+  let right = 0;
+  for (const a of outgoing) {
+    if (!a || a.isDeleted) continue;
+    const cId = a.endBinding?.elementId;
+    if (!cId) continue;
+    const cEl = snap.byId.get(cId);
+    if (!cEl) continue;
+    const side = getNodeSide(cEl, rootEl);
+    if (side === 'L') left++;
+    else if (side === 'R') right++;
+  }
+  return { left, right };
+}
+
+function chooseBiSideForNewChild(parentEl, selectedEl, mindmapRoot, snap) {
+  if (mindmapRoot && parentEl.id === mindmapRoot.id) {
+    const { left, right } = countRootChildrenSides(mindmapRoot, snap);
+    if (left < right) return 'L';
+    if (right < left) return 'R';
+    const sSide =
+      selectedEl && mindmapRoot ? getNodeSide(selectedEl, mindmapRoot) : 'C';
+    return sSide === 'L' ? 'L' : 'R';
+  }
+
+  if (mindmapRoot) {
+    const pSide = getNodeSide(parentEl, mindmapRoot);
+    if (pSide === 'L' || pSide === 'R') return pSide;
+    const sSide = selectedEl ? getNodeSide(selectedEl, mindmapRoot) : 'C';
+    if (sSide === 'L' || sSide === 'R') return sSide;
+  }
+
+  return 'R';
+}
+
+async function insertNode(selectedEl, snap, mode /* 'child'|'sibling' */) {
+  const { root: mindmapRoot, dir: mindmapDir } = getMindmapDirAndRoot(
+    selectedEl,
+    snap
   );
-  if (choice === null) return { didInsert: false, forceOutline: false };
-  if (choice === 'outline') return { didInsert: false, forceOutline: true };
+  const { levelSpacing, siblingSpacing } = getAxisSpacing();
 
   const label = await utils.inputPrompt(
-    choice === 'child' ? 'Add child node' : 'Add sibling node',
+    mode === 'child' ? 'Add child node' : 'Add sibling node',
     'Enter node text',
     '',
     [
@@ -440,77 +786,590 @@ async function insertChildOrSiblingFlow(selectedEl, snap) {
       { caption: 'Cancel', action: () => null },
     ]
   );
+  if (label === null || label === undefined) return;
+  if (label === '') return;
 
-  if (label === null || label === undefined || label === '') {
-    return { didInsert: true, forceOutline: false }; // treat as handled
-  }
-
-  const xSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
-  const ySpacing = parseFloat(settings['Vertical spacing'].value) || 100;
-
-  let sourceEl = null; // arrow start
-  let newX = 0;
-  let newY = 0;
-
-  if (choice === 'child') {
-    sourceEl = selectedEl;
-    const existingChildren = getRightChildren(selectedEl, snap);
-    if (existingChildren.length > 0) {
-      newX = existingChildren[0].x;
-      newY = existingChildren[existingChildren.length - 1].y + ySpacing;
-    } else {
-      newX = selectedEl.x + selectedEl.width + xSpacing;
-      newY = selectedEl.y;
-    }
+  let parentEl = null;
+  if (mode === 'child') {
+    parentEl = selectedEl;
   } else {
-    const parentEl = getParentFromLeft(selectedEl, snap);
+    parentEl = pickBestParent(selectedEl, snap);
     if (!parentEl) {
       new Notice(
         "No parent found (selected looks like the root). Use 'Add child' instead."
       );
-      return { didInsert: true, forceOutline: false };
-    }
-
-    sourceEl = parentEl;
-    const siblings = getRightChildren(parentEl, snap);
-    if (siblings.length > 0) {
-      newX = siblings[0].x;
-      newY = siblings[siblings.length - 1].y + ySpacing;
-    } else {
-      newX = parentEl.x + parentEl.width + xSpacing;
-      newY = parentEl.y;
+      return;
     }
   }
 
-  // Make sure source is editable (reliable connectObjects behavior)
-  try {
-    ea.copyViewElementsToEAforEditing([sourceEl]);
-  } catch (_e) {}
+  let effectiveDir = mindmapDir;
+  if (mindmapDir === 'BI') {
+    const side = chooseBiSideForNewChild(
+      parentEl,
+      selectedEl,
+      mindmapRoot,
+      snap
+    );
+    effectiveDir = side === 'L' ? 'RL' : 'LR';
+  }
 
   const textOptions = makeTextOptionsFromSource(selectedEl);
-  const arrowOptions = makeArrowOptionsFromSource(sourceEl, snap); // inherits sloppiness from existing arrows
+  const arrowOptions = makeArrowOptionsFromSource(parentEl, snap);
 
-  const newId = ea.addText(newX, newY, label, textOptions);
-  const newEl = ea.getElement(newId);
+  // Create node first to know width
+  const newId = ea.addText(parentEl.x, parentEl.y, label, textOptions);
+  let newEl = ea.getElement(newId);
+  if (!newEl) {
+    new Notice('Failed to create new node.');
+    return;
+  }
 
-  if (newEl) {
-    addBoundArrowBetween(sourceEl, newEl, arrowOptions);
+  // Determine siblings bucket (for BI root, keep left and right separate)
+  function isSameOutwardBucket(childEl) {
+    if (mindmapDir !== 'BI') return true;
+    if (!mindmapRoot) return true;
+
+    if (parentEl.id === mindmapRoot.id) {
+      const side = getNodeSide(childEl, mindmapRoot);
+      const want = effectiveDir === 'RL' ? 'L' : 'R';
+      return side === want || side === 'C';
+    }
+
+    const pSide = getNodeSide(parentEl, mindmapRoot);
+    const want = pSide === 'L' ? 'RL' : 'LR';
+    return want === effectiveDir;
+  }
+
+  const existingTriplesAll = getChildTriples(
+    parentEl,
+    snap,
+    mindmapDir,
+    mindmapRoot
+  );
+  const existingChildren = existingTriplesAll
+    .map(t => t.childEl)
+    .filter(c => isSameOutwardBucket(c))
+    .sort((a, b) => a.y - b.y);
+
+  let targetX = 0;
+  let targetY = 0;
+
+  if (effectiveDir === 'LR') {
+    if (existingChildren.length > 0) {
+      targetX = existingChildren[0].x;
+      targetY =
+        existingChildren[existingChildren.length - 1].y + siblingSpacing;
+    } else {
+      targetX = parentEl.x + parentEl.width + levelSpacing;
+      targetY = parentEl.y;
+    }
   } else {
-    // rare fallback
-    try {
-      ea.connectObjects(sourceEl.id, 'right', newId, 'left', {
-        numberOfPoints: arrowOptions.numberOfPoints,
-        startArrowHead: arrowOptions.startArrowHead,
-        endArrowHead: arrowOptions.endArrowHead,
-        padding: 0,
-      });
-    } catch (_e) {}
+    if (existingChildren.length > 0) {
+      targetX = existingChildren[0].x;
+      targetY =
+        existingChildren[existingChildren.length - 1].y + siblingSpacing;
+    } else {
+      targetX = parentEl.x - levelSpacing - newEl.width;
+      targetY = parentEl.y;
+    }
+  }
+
+  // Enter edit mode and apply positioning + connect
+  try {
+    ea.copyViewElementsToEAforEditing([parentEl, newEl]);
+  } catch (_e) {}
+
+  const editableNew = ea.getElement(newId) || newEl;
+  editableNew.x = targetX;
+  editableNew.y = targetY;
+
+  addBoundArrowBetween(parentEl, editableNew, arrowOptions, effectiveDir);
+
+  await ea.addElementsToView(false, false, true);
+  new Notice(mode === 'child' ? 'Added child node.' : 'Added sibling node.');
+}
+
+// -----------------------------------------------------
+// Optimize layout
+// - LR/RL: subtree layout
+// - BI: ALWAYS optimize the true root, and FORCE split root children left/right
+// -----------------------------------------------------
+async function optimizeLayout(subtreeRootEl, snap) {
+  const { root: mindmapRoot, dir: mindmapDir } = getMindmapDirAndRoot(
+    subtreeRootEl,
+    snap
+  );
+  const { levelSpacing, siblingSpacing } = getAxisSpacing();
+
+  snap = snapshotCanvas();
+
+  // ✅ BI is global: always optimize root, so we can split children on both sides
+  if (mindmapDir === 'BI' && mindmapRoot) {
+    await optimizeLayoutBiRoot(
+      mindmapRoot,
+      snap,
+      mindmapDir,
+      mindmapRoot,
+      levelSpacing,
+      siblingSpacing
+    );
+    return;
+  }
+
+  await optimizeLayoutSingleDir(
+    subtreeRootEl,
+    snap,
+    mindmapDir,
+    mindmapRoot,
+    mindmapDir,
+    levelSpacing,
+    siblingSpacing
+  );
+}
+
+function straightenArrowBetween(parentEl, childEl, arrowEl, dirLRorRL) {
+  const { parentSide, childSide, fpStart, fpEnd } = getSidesForDir(dirLRorRL);
+
+  const startAbs = edgeCenter(parentEl, parentSide);
+  const endAbs = edgeCenter(childEl, childSide);
+
+  try {
+    if (arrowEl.startBinding) {
+      arrowEl.startBinding.focus = 0;
+      if (arrowEl.startBinding.fixedPoint)
+        arrowEl.startBinding.fixedPoint = fpStart;
+    }
+    if (arrowEl.endBinding) {
+      arrowEl.endBinding.focus = 0;
+      if (arrowEl.endBinding.fixedPoint) arrowEl.endBinding.fixedPoint = fpEnd;
+    }
+  } catch (_e) {}
+
+  const minX = Math.min(startAbs[0], endAbs[0]);
+  const minY = Math.min(startAbs[1], endAbs[1]);
+
+  arrowEl.x = minX;
+  arrowEl.y = minY;
+
+  arrowEl.points = [
+    [startAbs[0] - minX, startAbs[1] - minY],
+    [endAbs[0] - minX, endAbs[1] - minY],
+  ];
+}
+
+async function optimizeLayoutSingleDir(
+  subtreeRootEl,
+  snap,
+  mindmapDir,
+  mindmapRoot,
+  effectiveDir,
+  levelSpacing,
+  siblingSpacing
+) {
+  const { nodes, edges } = collectSubtree(
+    subtreeRootEl,
+    snap,
+    mindmapDir,
+    mindmapRoot
+  );
+
+  if (!nodes || nodes.length <= 1) {
+    new Notice('Nothing to optimize (no children found).');
+    return;
+  }
+
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const childrenByParent = new Map();
+
+  for (const e of edges) {
+    if (!childrenByParent.has(e.parentId)) childrenByParent.set(e.parentId, []);
+    childrenByParent.get(e.parentId).push(e.childId);
+  }
+
+  for (const [pId, childIds] of childrenByParent.entries()) {
+    childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+  }
+
+  function countLeaves(id) {
+    const kids = childrenByParent.get(id) || [];
+    if (kids.length === 0) return 1;
+    let sum = 0;
+    for (const k of kids) sum += countLeaves(k);
+    return sum;
+  }
+
+  const pos = new Map(); // id -> {x,y}
+
+  const rootCenterY = centerY(subtreeRootEl);
+  const leafCount = countLeaves(subtreeRootEl.id);
+  const totalSpan = (leafCount - 1) * siblingSpacing;
+  let nextLeafCenterY = rootCenterY - totalSpan / 2;
+
+  function assignY(id) {
+    const el = byId.get(id);
+    if (!el) return;
+
+    const kids = childrenByParent.get(id) || [];
+
+    if (kids.length === 0) {
+      const yTopLeft = nextLeafCenterY - el.height / 2;
+      const cur = pos.get(id) || { x: el.x, y: el.y };
+      cur.y = yTopLeft;
+      pos.set(id, cur);
+      nextLeafCenterY += siblingSpacing;
+      return;
+    }
+
+    for (const k of kids) assignY(k);
+
+    const first = byId.get(kids[0]);
+    const last = byId.get(kids[kids.length - 1]);
+    if (!first || !last) return;
+
+    const fp = pos.get(first.id) || { x: first.x, y: first.y };
+    const lp = pos.get(last.id) || { x: last.x, y: last.y };
+
+    const firstCenter = fp.y + first.height / 2;
+    const lastCenter = lp.y + last.height / 2;
+
+    const myCenter = (firstCenter + lastCenter) / 2;
+    const yTopLeft = myCenter - el.height / 2;
+
+    const cur = pos.get(id) || { x: el.x, y: el.y };
+    cur.y = yTopLeft;
+    pos.set(id, cur);
+  }
+
+  assignY(subtreeRootEl.id);
+
+  // Preserve subtree root's Y (top-left)
+  const computedRoot = pos.get(subtreeRootEl.id) || {
+    x: subtreeRootEl.x,
+    y: subtreeRootEl.y,
+  };
+  const deltaY = subtreeRootEl.y - computedRoot.y;
+  for (const [id, p] of pos.entries()) {
+    p.y += deltaY;
+    pos.set(id, p);
+  }
+
+  function assignX(id) {
+    const el = byId.get(id);
+    if (!el) return;
+
+    const cur = pos.get(id) || { x: el.x, y: el.y };
+
+    if (id === subtreeRootEl.id) {
+      cur.x = subtreeRootEl.x;
+      pos.set(id, cur);
+    }
+
+    const kids = childrenByParent.get(id) || [];
+    for (const k of kids) {
+      const childEl = byId.get(k);
+      if (!childEl) continue;
+
+      const parentP = pos.get(id) || { x: el.x, y: el.y };
+      const childP = pos.get(k) || { x: childEl.x, y: childEl.y };
+
+      if (effectiveDir === 'LR') {
+        childP.x = parentP.x + el.width + levelSpacing;
+      } else {
+        childP.x = parentP.x - levelSpacing - childEl.width;
+      }
+
+      pos.set(k, childP);
+      assignX(k);
+    }
+  }
+
+  assignX(subtreeRootEl.id);
+
+  // Edit set: nodes + arrows
+  const arrowIds = edges.map(e => e.arrowId).filter(Boolean);
+  const liveNodeEls = nodes.map(n => ea.getElement(n.id) || n).filter(Boolean);
+  const liveArrowEls = arrowIds
+    .map(id => ea.getElement(id) || snap.byId.get(id))
+    .filter(a => a && a.type === 'arrow');
+
+  const editSet = (() => {
+    const m = new Map();
+    for (const el of [].concat(liveNodeEls, liveArrowEls)) {
+      if (el && el.id) m.set(el.id, el);
+    }
+    return Array.from(m.values());
+  })();
+
+  try {
+    ea.copyViewElementsToEAforEditing(editSet);
+  } catch (_e) {
+    new Notice('Optimize layout failed: could not enter edit mode.');
+    return;
+  }
+
+  let moved = 0;
+  for (const n of nodes) {
+    const p = pos.get(n.id);
+    if (!p) continue;
+    const ed = ea.getElement(n.id);
+    if (!ed) continue;
+    if (ed.x !== p.x || ed.y !== p.y) {
+      ed.x = p.x;
+      ed.y = p.y;
+      moved++;
+    }
+  }
+
+  let straightened = 0;
+  for (const e of edges) {
+    if (!e.arrowId) continue;
+    const a = ea.getElement(e.arrowId);
+    if (!a || a.type !== 'arrow') continue;
+
+    const pEl = ea.getElement(e.parentId);
+    const cEl = ea.getElement(e.childId);
+    if (!pEl || !cEl) continue;
+
+    straightenArrowBetween(pEl, cEl, a, effectiveDir);
+    straightened++;
   }
 
   await ea.addElementsToView(false, false, true);
-  new Notice(choice === 'child' ? 'Added child node.' : 'Added sibling node.');
+  new Notice(
+    `Optimized layout (${mindmapDir}). Moved ${moved} node(s), straightened ${straightened} arrow(s).`
+  );
+}
 
-  return { didInsert: true, forceOutline: false };
+async function optimizeLayoutBiRoot(
+  rootEl,
+  snap,
+  mindmapDir,
+  mindmapRoot,
+  levelSpacing,
+  siblingSpacing
+) {
+  // ✅ Use ALL outgoing edges so branches can be moved across sides safely
+  const { nodes, edges } = collectSubtreeAllOut(rootEl, snap);
+
+  if (!nodes || nodes.length <= 1) {
+    new Notice('Nothing to optimize (no children found).');
+    return;
+  }
+
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const childrenByParent = new Map();
+
+  for (const e of edges) {
+    if (!childrenByParent.has(e.parentId)) childrenByParent.set(e.parentId, []);
+    childrenByParent.get(e.parentId).push(e.childId);
+  }
+
+  // stable order by current y (predictable)
+  for (const [pId, childIds] of childrenByParent.entries()) {
+    childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+  }
+
+  // ✅ Force split: root’s direct children alternate by Y order (R, L, R, L...)
+  const sideById = new Map(); // nodeId -> 'L'|'R'|'C'
+  sideById.set(rootEl.id, 'C');
+
+  const rootKids = (childrenByParent.get(rootEl.id) || []).slice();
+  rootKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+
+  for (let i = 0; i < rootKids.length; i++) {
+    sideById.set(rootKids[i], i % 2 === 0 ? 'R' : 'L');
+  }
+
+  // Descendants inherit side from their parent
+  function propagateSide(pId) {
+    const kids = childrenByParent.get(pId) || [];
+    for (const k of kids) {
+      if (!sideById.has(k)) {
+        const pSide = sideById.get(pId) || 'C';
+        sideById.set(k, pSide === 'L' ? 'L' : 'R');
+      }
+      propagateSide(k);
+    }
+  }
+  propagateSide(rootEl.id);
+
+  // -------------------------------------------------
+  // ✅ Per-side vertical distribution (BI)
+  // Layout L and R independently so same-side root children
+  // are not separated by the opposite side’s subtree.
+  // -------------------------------------------------
+  const pos = new Map(); // id -> {x,y}
+  const rootCenterY = centerY(rootEl);
+
+  // Root stays fixed
+  pos.set(rootEl.id, { x: rootEl.x, y: rootEl.y });
+
+  function childrenOnSameSide(parentId, side) {
+    const kids = childrenByParent.get(parentId) || [];
+    return kids.filter(kId => (sideById.get(kId) || 'R') === side);
+  }
+
+  function countLeavesSide(id, side) {
+    const kids = childrenOnSameSide(id, side);
+    if (kids.length === 0) return 1;
+    let sum = 0;
+    for (const k of kids) sum += countLeavesSide(k, side);
+    return sum;
+  }
+
+  function assignYSide(id, side, ctx) {
+    const el = byId.get(id);
+    if (!el) return;
+
+    const kids = childrenOnSameSide(id, side);
+
+    if (kids.length === 0) {
+      const yTopLeft = ctx.nextLeafCenterY - el.height / 2;
+      const cur = pos.get(id) || { x: el.x, y: el.y };
+      cur.y = yTopLeft;
+      pos.set(id, cur);
+      ctx.nextLeafCenterY += siblingSpacing;
+      return;
+    }
+
+    for (const k of kids) assignYSide(k, side, ctx);
+
+    const first = byId.get(kids[0]);
+    const last = byId.get(kids[kids.length - 1]);
+    if (!first || !last) return;
+
+    const fp = pos.get(first.id) || { x: first.x, y: first.y };
+    const lp = pos.get(last.id) || { x: last.x, y: last.y };
+
+    const firstCenter = fp.y + first.height / 2;
+    const lastCenter = lp.y + last.height / 2;
+
+    const myCenter = (firstCenter + lastCenter) / 2;
+    const yTopLeft = myCenter - el.height / 2;
+
+    const cur = pos.get(id) || { x: el.x, y: el.y };
+    cur.y = yTopLeft;
+    pos.set(id, cur);
+  }
+
+  function layoutSide(side) {
+    const kids = (childrenByParent.get(rootEl.id) || []).filter(
+      kId => (sideById.get(kId) || 'R') === side
+    );
+    if (kids.length === 0) return;
+
+    // Stable order
+    kids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+
+    // Total leaves only on this side
+    let totalLeaves = 0;
+    for (const k of kids) totalLeaves += countLeavesSide(k, side);
+
+    const totalSpan = (totalLeaves - 1) * siblingSpacing;
+    const ctx = { nextLeafCenterY: rootCenterY - totalSpan / 2 };
+
+    for (const k of kids) assignYSide(k, side, ctx);
+  }
+
+  // Key change: do both sides independently
+  layoutSide('L');
+  layoutSide('R');
+
+  // -------------------------------------------------
+  // X assignment: based on sideById
+  // -------------------------------------------------
+  function assignX(id) {
+    const el = byId.get(id);
+    if (!el) return;
+
+    const cur = pos.get(id) || { x: el.x, y: el.y };
+    if (id === rootEl.id) {
+      cur.x = rootEl.x;
+      pos.set(id, cur);
+    }
+
+    const kids = childrenByParent.get(id) || [];
+    for (const k of kids) {
+      const childEl = byId.get(k);
+      if (!childEl) continue;
+
+      const parentP = pos.get(id) || { x: el.x, y: el.y };
+      const childP = pos.get(k) || { x: childEl.x, y: childEl.y };
+
+      const side = sideById.get(k) || 'R';
+      if (side === 'L') {
+        childP.x = parentP.x - levelSpacing - childEl.width;
+      } else {
+        childP.x = parentP.x + el.width + levelSpacing;
+      }
+
+      pos.set(k, childP);
+      assignX(k);
+    }
+  }
+
+  assignX(rootEl.id);
+
+  // -------------------------------------------------
+  // Edit set: nodes + arrows
+  // -------------------------------------------------
+  const arrowIds = edges.map(e => e.arrowId).filter(Boolean);
+  const liveNodeEls = nodes.map(n => ea.getElement(n.id) || n).filter(Boolean);
+  const liveArrowEls = arrowIds
+    .map(id => ea.getElement(id) || snap.byId.get(id))
+    .filter(a => a && a.type === 'arrow');
+
+  const editSet = (() => {
+    const m = new Map();
+    for (const el of [].concat(liveNodeEls, liveArrowEls)) {
+      if (el && el.id) m.set(el.id, el);
+    }
+    return Array.from(m.values());
+  })();
+
+  try {
+    ea.copyViewElementsToEAforEditing(editSet);
+  } catch (_e) {
+    new Notice('Optimize layout failed: could not enter edit mode.');
+    return;
+  }
+
+  let moved = 0;
+  for (const n of nodes) {
+    const p = pos.get(n.id);
+    if (!p) continue;
+    const ed = ea.getElement(n.id);
+    if (!ed) continue;
+    if (ed.x !== p.x || ed.y !== p.y) {
+      ed.x = p.x;
+      ed.y = p.y;
+      moved++;
+    }
+  }
+
+  // -------------------------------------------------
+  // Straighten arrows
+  // -------------------------------------------------
+  let straightened = 0;
+  for (const e of edges) {
+    if (!e.arrowId) continue;
+    const a = ea.getElement(e.arrowId);
+    if (!a || a.type !== 'arrow') continue;
+
+    const pEl = ea.getElement(e.parentId);
+    const cEl = ea.getElement(e.childId);
+    if (!pEl || !cEl) continue;
+
+    const side = sideById.get(e.childId) || 'R';
+    const edgeDir = side === 'L' ? 'RL' : 'LR';
+    straightenArrowBetween(pEl, cEl, a, edgeDir);
+    straightened++;
+  }
+
+  await ea.addElementsToView(false, false, true);
+  new Notice(
+    `Optimized BI layout. Moved ${moved} node(s), straightened ${straightened} arrow(s).`
+  );
 }
 
 // -----------------------------------------------------
@@ -568,8 +1427,6 @@ if (
         parent: null,
         children: [],
         element: null,
-        x: 0,
-        y: 0,
       };
 
       if (level > 0 && nodeStack[level - 1]) {
@@ -608,8 +1465,6 @@ if (
         parent: null,
         children: [],
         element: null,
-        x: 0,
-        y: 0,
       };
 
       for (const originalRoot of rootNodes) {
@@ -617,66 +1472,23 @@ if (
         defaultRootNode.children.push(originalRoot);
       }
 
-      const relabelLevels = (n, lvl) => {
-        n.level = lvl;
-        for (const c of n.children || []) relabelLevels(c, lvl + 1);
-      };
-      relabelLevels(defaultRootNode, 0);
-
       return [defaultRootNode];
     }
 
     return rootNodes;
   }
 
-  async function buildMindmapFromBullets(rootNode, originalTextEl) {
-    const sourceTextX = originalTextEl.x;
-    const sourceTextY = originalTextEl.y;
-    const sourceTextWidth = originalTextEl.width;
-    const sourceTextHeight = originalTextEl.height;
+  async function chooseDirection(defaultDir = 'LR') {
+    const choice = await utils.suggester(
+      ['Left → Right (LR)', 'Right → Left (RL)', 'Center split (BI)'],
+      ['LR', 'RL', 'BI'],
+      `Mindmap direction (default ${defaultDir})`
+    );
+    return choice === null ? defaultDir : choice;
+  }
 
-    const xSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
-    const ySpacing = parseFloat(settings['Vertical spacing'].value) || 100;
-
-    const countLeafNodes = node => {
-      if (!node.children || node.children.length === 0) return 1;
-      return node.children.reduce(
-        (sum, child) => sum + countLeafNodes(child),
-        0
-      );
-    };
-
-    const leafNodeCount = countLeafNodes(rootNode);
-    const estimatedTotalHeight = (leafNodeCount - 1) * ySpacing;
-    const sourceTextCenter = sourceTextY + sourceTextHeight / 2;
-    let nextY = sourceTextCenter - estimatedTotalHeight / 2;
-
-    function assignInitialPositions(node, level, x) {
-      node.x = x;
-
-      if (!node.children || node.children.length === 0) {
-        node.y = nextY;
-        nextY += ySpacing;
-      } else {
-        for (const child of node.children) {
-          assignInitialPositions(child, level + 1, x + xSpacing);
-        }
-        const firstChildY = node.children[0].y;
-        const lastChildY = node.children[node.children.length - 1].y;
-        node.y = (firstChildY + lastChildY) / 2;
-      }
-    }
-
-    const rootX = sourceTextX + sourceTextWidth + 20;
-    assignInitialPositions(rootNode, 0, rootX);
-
-    ea.style.strokeColor = '#000000';
-    ea.style.strokeWidth = 1;
-    ea.style.strokeStyle = 'solid';
-    ea.style.strokeSharpness = 'sharp';
-    ea.style.fontFamily = 5;
-
-    const textOptions = {
+  function createTextOptions() {
+    return {
       fontFamily: 5,
       fontSize: 20,
       textAlign: 'center',
@@ -691,92 +1503,143 @@ if (
       handDrawn: true,
       isHandDrawn: true,
     };
+  }
 
-    const createTextElement = (x, y, text) =>
-      ea.addText(x, y, text, textOptions);
+  async function buildMindmapFromBullets(rootNode, originalTextEl) {
+    const dir = await chooseDirection('LR');
+    const { levelSpacing, siblingSpacing } = getAxisSpacing();
+    const textOptions = createTextOptions();
 
-    const arrowOptions = {
-      startArrowHead: normalizeArrowHead(
-        settings['Starting arrowhead'].value === 'none'
-          ? null
-          : settings['Starting arrowhead'].value
-      ),
-      endArrowHead: normalizeArrowHead(
-        settings['Ending arrowhead'].value === 'none'
-          ? null
-          : settings['Ending arrowhead'].value
-      ),
-      numberOfPoints: Math.floor(settings['Line points'].value) || 0,
-      strokeColor: ea.style.strokeColor,
-      strokeWidth: ea.style.strokeWidth,
-      strokeStyle: ea.style.strokeStyle,
-      strokeSharpness: ea.style.strokeSharpness,
-      roughness: 2,
-    };
-
-    // temp elements for measurement
-    function createTemporaryElements(node) {
-      const elementId = ea.addText(node.x, node.y, node.label, textOptions);
-      node.element = ea.getElement(elementId);
-      for (const child of node.children || []) createTemporaryElements(child);
+    // Create elements for measurement
+    function createElements(node) {
+      const id = ea.addText(0, 0, node.label, textOptions);
+      node.element = ea.getElement(id);
+      for (const c of node.children || []) createElements(c);
     }
-    createTemporaryElements(rootNode);
+    createElements(rootNode);
 
-    function adjustPositions(node) {
-      if (!node.children || node.children.length === 0) return;
-      const parentRightEdge = node.x + node.element.width;
-      for (const child of node.children) {
-        child.element.x = parentRightEdge + xSpacing;
-        child.x = child.element.x;
-        adjustPositions(child);
+    const sourceTextX = originalTextEl.x;
+    const sourceTextY = originalTextEl.y;
+    const sourceTextW = originalTextEl.width;
+    const sourceTextH = originalTextEl.height;
+
+    const rootEl = rootNode.element;
+    const centerSrcY = sourceTextY + sourceTextH / 2;
+
+    // Place root to the right of source text block
+    rootEl.x = sourceTextX + sourceTextW + 20;
+    rootEl.y = centerSrcY - rootEl.height / 2;
+
+    const arrowOptions = makeArrowOptionsFromContext(snapshotCanvas(), []);
+
+    // Tree maps
+    const childrenMap = new Map();
+    (function walk(n) {
+      childrenMap.set(n, (n.children || []).slice());
+      for (const c of n.children || []) walk(c);
+    })(rootNode);
+
+    function countLeaves(node) {
+      const kids = childrenMap.get(node) || [];
+      if (kids.length === 0) return 1;
+      let sum = 0;
+      for (const k of kids) sum += countLeaves(k);
+      return sum;
+    }
+
+    const totalLeaves = countLeaves(rootNode);
+    const totalSpan = (totalLeaves - 1) * siblingSpacing;
+    let nextLeafCenterY = centerY(rootEl) - totalSpan / 2;
+
+    function assignY(node) {
+      const el = node.element;
+      const kids = childrenMap.get(node) || [];
+
+      if (kids.length === 0) {
+        el.y = nextLeafCenterY - el.height / 2;
+        nextLeafCenterY += siblingSpacing;
+        return;
       }
-    }
-    adjustPositions(rootNode);
 
-    const nodePositions = [];
-    function collectNodePositions(node) {
-      nodePositions.push({
-        id: node.element.id,
-        x: node.x,
-        y: node.y,
-        text: node.label,
-        node,
-      });
-      for (const child of node.children || []) collectNodePositions(child);
-    }
-    collectNodePositions(rootNode);
+      for (const c of kids) assignY(c);
 
-    const oldElementIds = nodePositions.map(item => item.id);
-
-    function clearElementReferences(node) {
-      node.element = null;
-      for (const child of node.children || []) clearElementReferences(child);
-    }
-    clearElementReferences(rootNode);
-
-    for (const item of nodePositions) {
-      const elementId = createTextElement(item.x, item.y, item.text);
-      const element = ea.getElement(elementId);
-      item.node.element = element;
+      const first = kids[0].element;
+      const last = kids[kids.length - 1].element;
+      const myCenter = (centerY(first) + centerY(last)) / 2;
+      el.y = myCenter - el.height / 2;
     }
 
-    function connectWithArrows(node) {
-      for (const child of node.children || []) {
-        if (node.element && child.element) {
-          addBoundArrowBetween(node.element, child.element, arrowOptions);
+    assignY(rootNode);
+
+    // BI: alternate root children L/R; descendants inherit
+    const sideByNode = new Map();
+    sideByNode.set(rootNode, 'C');
+
+    if (dir === 'BI') {
+      const rootKids = childrenMap.get(rootNode) || [];
+      for (let i = 0; i < rootKids.length; i++) {
+        sideByNode.set(rootKids[i], i % 2 === 0 ? 'R' : 'L');
+      }
+
+      (function propagate(n) {
+        const kids = childrenMap.get(n) || [];
+        for (const c of kids) {
+          if (!sideByNode.has(c)) {
+            const pSide = sideByNode.get(n) || 'R';
+            sideByNode.set(c, pSide === 'L' ? 'L' : 'R');
+          }
+          propagate(c);
         }
-        connectWithArrows(child);
+      })(rootNode);
+    }
+
+    function assignX(node) {
+      const el = node.element;
+      const kids = childrenMap.get(node) || [];
+      for (const c of kids) {
+        const childEl = c.element;
+
+        let edgeDir = dir;
+        if (dir === 'BI') {
+          const side = sideByNode.get(c) || 'R';
+          edgeDir = side === 'L' ? 'RL' : 'LR';
+        }
+
+        if (edgeDir === 'LR') {
+          childEl.x = el.x + el.width + levelSpacing;
+        } else {
+          childEl.x = el.x - levelSpacing - childEl.width;
+        }
+
+        assignX(c);
       }
     }
-    connectWithArrows(rootNode);
 
-    // delete temp
+    assignX(rootNode);
+
+    // Store dir on root
     try {
-      for (const elementId of oldElementIds) {
-        const element = ea.getElement(elementId);
-        if (element) element.isDeleted = true;
-      }
+      ea.copyViewElementsToEAforEditing([rootEl]);
+      const editableRoot = ea.getElement(rootEl.id) || rootEl;
+      writeMindmapDirToRoot_EDITABLE(editableRoot, dir);
     } catch (_e) {}
+
+    // Connect arrows
+    function connect(node) {
+      for (const c of node.children || []) {
+        if (!node.element || !c.element) continue;
+
+        let edgeDir = dir;
+        if (dir === 'BI') {
+          const side = sideByNode.get(c) || 'R';
+          edgeDir = side === 'L' ? 'RL' : 'LR';
+        }
+
+        addBoundArrowBetween(node.element, c.element, arrowOptions, edgeDir);
+        connect(c);
+      }
+    }
+    connect(rootNode);
 
     // delete original text block
     try {
@@ -793,7 +1656,7 @@ if (
     }
 
     await ea.addElementsToView(false, false, true);
-    new Notice('Created mindmap from bulleted text!');
+    new Notice(`Created mindmap from bulleted text (${dir})!`);
   }
 
   const textElement = selectedElements[0];
@@ -814,510 +1677,17 @@ if (
 }
 
 // -----------------------------------------------------
-// Single element selected: show an action menu (no Ctrl/Cmd gating)
-// Actions: Group / Copy / Add Child / Add Sibling / Optimize layout
+// Single element selected: action menu
 // -----------------------------------------------------
 if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
   snapshot = snapshotCanvas();
-  const rootElement = selectedElements[0];
+  const selectedEl = selectedElements[0];
 
-  // -----------------------
-  // Helpers: traverse subtree
-  // -----------------------
-  function getChildTriples(parentEl, snap) {
-    // returns [{ childEl, arrowEl }]
-    const outgoing = snap.outgoingArrows.get(parentEl.id) || [];
-    const triples = [];
-
-    for (const a of outgoing) {
-      if (!a || a.isDeleted) continue;
-      const childId = a.endBinding?.elementId;
-      if (!childId) continue;
-
-      const childEl = snap.byId.get(childId);
-      if (!childEl) continue;
-      if (childEl.type === 'arrow' || childEl.type === 'line') continue;
-
-      // mindmap grammar: left -> right
-      if (childEl.x > parentEl.x) {
-        triples.push({ childEl, arrowEl: a });
-      }
-    }
-
-    triples.sort((t1, t2) => (t1.childEl.y || 0) - (t2.childEl.y || 0));
-    return triples;
-  }
-
-  function collectSubtree(rootEl, snap) {
-    const visited = new Set();
-    const nodes = []; // element objects (non-arrow/line)
-    const edges = []; // { parentId, childId, arrowId }
-
-    function dfs(el) {
-      if (!el || visited.has(el.id)) return;
-      visited.add(el.id);
-
-      nodes.push(el);
-
-      const triples = getChildTriples(el, snap);
-      for (const t of triples) {
-        edges.push({
-          parentId: el.id,
-          childId: t.childEl.id,
-          arrowId: t.arrowEl?.id || null,
-        });
-        dfs(t.childEl);
-      }
-    }
-
-    dfs(rootEl);
-    return { nodes, edges };
-  }
-
-  // -----------------------
-  // Helpers: build outline
-  // -----------------------
-  function buildOutline(element, snap, visited = new Set(), depth = 0) {
-    if (!element || visited.has(element.id)) return '';
-    visited.add(element.id);
-
-    let label = element.text?.trim() ?? `Element ${element.id}`;
-    label = String(label).replace(/\r?\n/g, ' ');
-
-    const indent = '\t'.repeat(depth);
-    const useDash = settings['Add dash bullet'].value;
-    const bulletPrefix = useDash ? '- ' : '';
-
-    let outline = `${indent}${bulletPrefix}${label}\n`;
-
-    const triples = getChildTriples(element, snap);
-    for (const t of triples) {
-      outline += buildOutline(t.childEl, snap, visited, depth + 1);
-    }
-    return outline;
-  }
-
-  async function doCopyOutline(rootEl, snap) {
-    const bulletText = buildOutline(rootEl, snap);
-
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(bulletText);
-        new Notice('Mindmap text copied to clipboard!');
-      } else {
-        ea.setClipboard(bulletText);
-        new Notice('Mindmap text copied to plugin clipboard!');
-      }
-    } catch (_e) {
-      new Notice('Error copying mindmap text to clipboard!');
-    }
-  }
-
-  // -----------------------
-  // Helpers: group subtree
-  // -----------------------
-  function getChildElementsForGrouping(element, snap, visited) {
-    visited = visited || new Set();
-    let children = [];
-
-    if (visited.has(element.id)) return children;
-    visited.add(element.id);
-
-    const outgoing = snap.outgoingArrows.get(element.id) || [];
-    for (const arrow of outgoing) {
-      if (!arrow || arrow.isDeleted) continue;
-      const endId = arrow.endBinding?.elementId;
-      const endElement = endId ? snap.byId.get(endId) : null;
-
-      if (endElement && endElement.x > element.x) {
-        children.push(endElement);
-        children.push(arrow);
-        children = children.concat(
-          getChildElementsForGrouping(endElement, snap, visited)
-        );
-      }
-    }
-
-    return children;
-  }
-
-  async function doGroupSubtree(rootEl, snap) {
-    const childElements = getChildElementsForGrouping(rootEl, snap);
-    const elementsToGroup = [rootEl].concat(childElements);
-
-    // de-dupe
-    const uniq = new Map();
-    for (const el of elementsToGroup) if (el && el.id) uniq.set(el.id, el);
-    const uniqElementsToGroup = Array.from(uniq.values());
-
-    const elementIdsToGroup = uniqElementsToGroup
-      .filter(el => el.type !== 'arrow' && el.type !== 'line')
-      .map(el => el.id);
-
-    const addBox = settings['Box selected'].value;
-
-    if (addBox) {
-      const box = ea.getBoundingBox(uniqElementsToGroup);
-      const padding = 5;
-      const color = ea.getExcalidrawAPI().getAppState().currentItemStrokeColor;
-
-      ea.style.strokeColor = color;
-      ea.style.roundness = { type: 2, value: padding };
-
-      const boxId = ea.addRect(
-        box.topX - padding,
-        box.topY - padding,
-        box.width + 2 * padding,
-        box.height + 2 * padding
-      );
-
-      try {
-        if (typeof ea.sendToBack === 'function') ea.sendToBack([boxId]);
-        else {
-          const api = ea.getExcalidrawAPI?.();
-          if (api && typeof api.sendToBack === 'function')
-            api.sendToBack([boxId]);
-        }
-      } catch (_e) {}
-
-      ea.copyViewElementsToEAforEditing(uniqElementsToGroup);
-      ea.addToGroup([boxId].concat(elementIdsToGroup));
-    } else {
-      ea.copyViewElementsToEAforEditing(uniqElementsToGroup);
-      ea.addToGroup(elementIdsToGroup);
-    }
-
-    await ea.addElementsToView(false, false, true);
-    new Notice(`Grouped ${uniqElementsToGroup.length} elements.`);
-  }
-
-  // -----------------------
-  // Helpers: Add child / sibling (no Ctrl/Cmd required)
-  // -----------------------
-  async function insertNodeFlow(
+  const { root: mindmapRoot, dir: mindmapDir } = getMindmapDirAndRoot(
     selectedEl,
-    snap,
-    mode /* 'child'|'sibling' */
-  ) {
-    const label = await utils.inputPrompt(
-      mode === 'child' ? 'Add child node' : 'Add sibling node',
-      'Enter node text',
-      '',
-      [
-        { caption: 'Confirm', action: input => (input || '').trim() },
-        { caption: 'Cancel', action: () => null },
-      ]
-    );
+    snapshot
+  );
 
-    if (label === null || label === undefined) return;
-    if (label === '') return; // handled but no-op
-
-    const xSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
-    const ySpacing = parseFloat(settings['Vertical spacing'].value) || 100;
-
-    // Local helpers (same as your existing logic)
-    function getRightChildren(parentEl, snap2) {
-      const outgoing = snap2.outgoingArrows.get(parentEl.id) || [];
-      const children = [];
-      for (const a of outgoing) {
-        const childId = a.endBinding?.elementId;
-        if (!childId) continue;
-        const childEl = snap2.byId.get(childId);
-        if (!childEl) continue;
-        if (childEl.x > parentEl.x) children.push(childEl);
-      }
-      children.sort((a, b) => a.y - b.y);
-      return children;
-    }
-
-    function getParentFromLeft(childEl, snap2) {
-      const incoming = snap2.incomingArrows.get(childEl.id) || [];
-      const candidates = [];
-      for (const a of incoming) {
-        const pId = a.startBinding?.elementId;
-        if (!pId) continue;
-        const pEl = snap2.byId.get(pId);
-        if (!pEl) continue;
-        if (pEl.x < childEl.x) candidates.push(pEl);
-      }
-      if (candidates.length === 0) return null;
-      candidates.sort((a, b) => b.x - a.x); // closest from left
-      return candidates[0];
-    }
-
-    let sourceEl = null; // arrow start
-    let newX = 0;
-    let newY = 0;
-
-    if (mode === 'child') {
-      sourceEl = selectedEl;
-      const existingChildren = getRightChildren(selectedEl, snap);
-      if (existingChildren.length > 0) {
-        newX = existingChildren[0].x;
-        newY = existingChildren[existingChildren.length - 1].y + ySpacing;
-      } else {
-        newX = selectedEl.x + selectedEl.width + xSpacing;
-        newY = selectedEl.y;
-      }
-    } else {
-      const parentEl = getParentFromLeft(selectedEl, snap);
-      if (!parentEl) {
-        new Notice(
-          "No parent found (selected looks like the root). Use 'Add child' instead."
-        );
-        return;
-      }
-
-      sourceEl = parentEl;
-      const siblings = getRightChildren(parentEl, snap);
-      if (siblings.length > 0) {
-        newX = siblings[0].x;
-        newY = siblings[siblings.length - 1].y + ySpacing;
-      } else {
-        newX = parentEl.x + parentEl.width + xSpacing;
-        newY = parentEl.y;
-      }
-    }
-
-    // Make sure source is editable (reliable connectObjects behavior)
-    try {
-      ea.copyViewElementsToEAforEditing([sourceEl]);
-    } catch (_e) {}
-
-    const textOptions = makeTextOptionsFromSource(selectedEl);
-    const arrowOptions = makeArrowOptionsFromSource(sourceEl, snap);
-
-    const newId = ea.addText(newX, newY, label, textOptions);
-    const newEl = ea.getElement(newId);
-
-    if (newEl) {
-      addBoundArrowBetween(sourceEl, newEl, arrowOptions);
-    } else {
-      // rare fallback
-      try {
-        ea.connectObjects(sourceEl.id, 'right', newId, 'left', {
-          numberOfPoints: arrowOptions.numberOfPoints,
-          startArrowHead: arrowOptions.startArrowHead,
-          endArrowHead: arrowOptions.endArrowHead,
-          padding: 0,
-        });
-      } catch (_e) {}
-    }
-
-    await ea.addElementsToView(false, false, true);
-    new Notice(mode === 'child' ? 'Added child node.' : 'Added sibling node.');
-  }
-
-  // -----------------------
-  // Optimize layout: re-layout existing subtree (no re-create)
-  // Similar to bullet->mindmap layout, but anchored to current root position.
-  // -----------------------
-  async function optimizeLayout(rootEl, snap) {
-    // Refresh snapshot so we use current bindings/positions
-    snap = snapshotCanvas();
-
-    const xSpacing = parseFloat(settings['Horizontal spacing'].value) || 200;
-    const ySpacing = parseFloat(settings['Vertical spacing'].value) || 100;
-
-    const { nodes, edges } = collectSubtree(rootEl, snap);
-
-    if (!nodes || nodes.length <= 1) {
-      new Notice('Nothing to optimize (no children found).');
-      return;
-    }
-
-    // Build tree structure (ids only)
-    const byId = new Map(nodes.map(n => [n.id, n]));
-    const childrenByParent = new Map(); // parentId -> childIds[]
-    for (const e of edges) {
-      if (!childrenByParent.has(e.parentId))
-        childrenByParent.set(e.parentId, []);
-      childrenByParent.get(e.parentId).push(e.childId);
-    }
-
-    // Stable child order by current Y
-    for (const [pId, childIds] of childrenByParent.entries()) {
-      childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
-    }
-
-    function countLeaves(id) {
-      const kids = childrenByParent.get(id) || [];
-      if (kids.length === 0) return 1;
-      let sum = 0;
-      for (const k of kids) sum += countLeaves(k);
-      return sum;
-    }
-
-    // Layout positions (top-left x,y)
-    const pos = new Map(); // id -> {x,y}
-
-    const rootAnchorCenterY = rootEl.y + rootEl.height / 2;
-    const leafCount = countLeaves(rootEl.id);
-    const estimatedTotalHeight = (leafCount - 1) * ySpacing;
-
-    let nextLeafY = rootAnchorCenterY - estimatedTotalHeight / 2;
-
-    function assignY(id) {
-      const kids = childrenByParent.get(id) || [];
-      const el = byId.get(id);
-      if (!el) return;
-
-      if (kids.length === 0) {
-        pos.set(id, { x: el.x, y: nextLeafY });
-        nextLeafY += ySpacing;
-        return;
-      }
-
-      for (const k of kids) assignY(k);
-
-      const first = pos.get(kids[0]);
-      const last = pos.get(kids[kids.length - 1]);
-      pos.set(id, { x: el.x, y: (first.y + last.y) / 2 });
-    }
-
-    assignY(rootEl.id);
-
-    function assignX(id, x) {
-      const el = byId.get(id);
-      if (!el) return;
-
-      const p = pos.get(id) || { x: el.x, y: el.y };
-      p.x = x;
-      pos.set(id, p);
-
-      const kids = childrenByParent.get(id) || [];
-      const childX = x + (el.width || 0) + xSpacing;
-      for (const k of kids) assignX(k, childX);
-    }
-
-    // Root stays at current X (and we will keep its Y too)
-    assignX(rootEl.id, rootEl.x);
-
-    const computedRoot = pos.get(rootEl.id);
-    if (!computedRoot) {
-      new Notice('Optimize layout failed: could not compute root position.');
-      return;
-    }
-
-    // Preserve root top-left Y by shifting the whole subtree
-    const deltaY = rootEl.y - computedRoot.y;
-    for (const [id, p] of pos.entries()) {
-      p.y += deltaY;
-      pos.set(id, p);
-    }
-
-    // Prepare edit set: all nodes + all arrows in subtree
-    const arrowIds = edges.map(e => e.arrowId).filter(Boolean);
-
-    const liveNodeEls = nodes
-      .map(n => ea.getElement(n.id) || n)
-      .filter(Boolean);
-    const liveArrowEls = arrowIds
-      .map(id => ea.getElement(id) || snap.byId.get(id))
-      .filter(a => a && a.type === 'arrow');
-
-    const editSet = (() => {
-      const m = new Map();
-      for (const el of [].concat(liveNodeEls, liveArrowEls)) {
-        if (el && el.id) m.set(el.id, el);
-      }
-      return Array.from(m.values());
-    })();
-
-    try {
-      ea.copyViewElementsToEAforEditing(editSet);
-    } catch (_e) {
-      new Notice(
-        'Optimize layout failed: could not enter edit mode for elements.'
-      );
-      return;
-    }
-
-    // IMPORTANT: mutate the EA-editable clones, not the snapshot objects.
-    let moved = 0;
-    for (const n of nodes) {
-      const p = pos.get(n.id);
-      if (!p) continue;
-
-      const ed = ea.getElement(n.id);
-      if (!ed) continue;
-
-      if (ed.x !== p.x || ed.y !== p.y) {
-        ed.x = p.x;
-        ed.y = p.y;
-        moved++;
-      }
-    }
-
-    // ---- Arrow cleanup: straighten/re-route arrows after node movement ----
-    function straightenArrowBetween(parentEl, childEl, arrowEl) {
-      if (!parentEl || !childEl || !arrowEl) return;
-
-      const parentCx = parentEl.x + parentEl.width / 2;
-      const childCx = childEl.x + childEl.width / 2;
-      const goRight = childCx >= parentCx;
-
-      const startAbs = goRight
-        ? [parentEl.x + parentEl.width, parentEl.y + parentEl.height / 2]
-        : [parentEl.x, parentEl.y + parentEl.height / 2];
-
-      const endAbs = goRight
-        ? [childEl.x, childEl.y + childEl.height / 2]
-        : [childEl.x + childEl.width, childEl.y + childEl.height / 2];
-
-      // Keep bindings centered on the edge midpoints (best-effort)
-      try {
-        if (arrowEl.startBinding) {
-          arrowEl.startBinding.focus = 0;
-          if (arrowEl.startBinding.fixedPoint)
-            arrowEl.startBinding.fixedPoint = goRight ? [1, 0.5] : [0, 0.5];
-        }
-        if (arrowEl.endBinding) {
-          arrowEl.endBinding.focus = 0;
-          if (arrowEl.endBinding.fixedPoint)
-            arrowEl.endBinding.fixedPoint = goRight ? [0, 0.5] : [1, 0.5];
-        }
-      } catch (_e) {}
-
-      // Reset geometry to a clean 2-point line (removes messy bends)
-      const minX = Math.min(startAbs[0], endAbs[0]);
-      const minY = Math.min(startAbs[1], endAbs[1]);
-
-      arrowEl.x = minX;
-      arrowEl.y = minY;
-
-      const p0 = [startAbs[0] - minX, startAbs[1] - minY];
-      const p1 = [endAbs[0] - minX, endAbs[1] - minY];
-
-      arrowEl.points = [p0, p1];
-    }
-
-    let straightened = 0;
-
-    // Use edges list (parentId -> childId) to straighten each subtree arrow
-    for (const e of edges) {
-      if (!e.arrowId) continue;
-
-      const a = ea.getElement(e.arrowId);
-      if (!a || a.type !== 'arrow') continue;
-
-      const pEl = ea.getElement(e.parentId);
-      const cEl = ea.getElement(e.childId);
-      if (!pEl || !cEl) continue;
-
-      straightenArrowBetween(pEl, cEl, a);
-      straightened++;
-    }
-
-    await ea.addElementsToView(false, false, true);
-    new Notice(
-      `Optimized layout. Moved ${moved} node(s), straightened ${straightened} arrow(s).`
-    );
-  }
-
-  // -----------------------
-  // Action menu (no Ctrl/Cmd required)
-  // -----------------------
   const action = await utils.suggester(
     [
       'Group',
@@ -1325,38 +1695,62 @@ if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
       'Add Child',
       'Add Sibling',
       'Optimize layout',
+      'Set mindmap direction',
     ],
-    ['group', 'copy', 'child', 'sibling', 'optimize'],
-    'Choose action'
+    ['group', 'copy', 'child', 'sibling', 'optimize', 'setdir'],
+    `Choose action (dir: ${mindmapDir})`
   );
 
   if (action === null) return;
 
-  // Refresh snapshot before acting (selection might be stale)
   snapshot = snapshotCanvas();
 
   if (action === 'group') {
-    await doGroupSubtree(rootElement, snapshot);
+    await groupSubtree(selectedEl, snapshot, mindmapDir, mindmapRoot);
     return;
   }
 
   if (action === 'copy') {
-    await doCopyOutline(rootElement, snapshot);
+    await copyOutlineToClipboard(selectedEl, snapshot, mindmapDir, mindmapRoot);
     return;
   }
 
   if (action === 'child') {
-    await insertNodeFlow(rootElement, snapshot, 'child');
+    await insertNode(selectedEl, snapshot, 'child');
     return;
   }
 
   if (action === 'sibling') {
-    await insertNodeFlow(rootElement, snapshot, 'sibling');
+    await insertNode(selectedEl, snapshot, 'sibling');
     return;
   }
 
   if (action === 'optimize') {
-    await optimizeLayout(rootElement, snapshot);
+    await optimizeLayout(selectedEl, snapshot);
+    return;
+  }
+
+  if (action === 'setdir') {
+    const newDir = await utils.suggester(
+      ['Left → Right (LR)', 'Right → Left (RL)', 'Center split (BI)'],
+      ['LR', 'RL', 'BI'],
+      'Set direction for this mindmap (stored on root)'
+    );
+    if (newDir === null) return;
+
+    const fresh = snapshotCanvas();
+    const trueRoot = findMindmapRoot(selectedEl, fresh);
+
+    try {
+      ea.copyViewElementsToEAforEditing([trueRoot]);
+      const editableRoot = ea.getElement(trueRoot.id) || trueRoot;
+      writeMindmapDirToRoot_EDITABLE(editableRoot, newDir);
+      await ea.addElementsToView(false, false, true);
+      new Notice(`Mindmap direction set to ${newDir} (on root).`);
+    } catch (_e) {
+      new Notice('Failed to set mindmap direction.');
+    }
+
     return;
   }
 
@@ -1376,7 +1770,6 @@ const onlyNonArrowsSelected =
 
 let userAction = 'connect';
 
-// Show prompt only if arrows are included in selection (same as your previous behavior)
 if (!onlyNonArrowsSelected) {
   userAction = await utils.suggester(
     ['Reconnect elements', 'Delete arrows'],
@@ -1387,7 +1780,6 @@ if (!onlyNonArrowsSelected) {
 }
 
 if (userAction === 'connect') {
-  // Reconnect = preserve original connections; only repair missing/broken.
   selectedElements = selectedElements.filter(
     el => el.type !== 'arrow' && el.type !== 'line'
   );
@@ -1398,13 +1790,16 @@ if (userAction === 'connect') {
 
   const selectedIds = new Set(elementsForConnect.map(e => e.id));
 
-  // Arrow style for *new* edges (match existing line “sloppiness”)
+  const mindmapInfo = elementsForConnect.length
+    ? getMindmapDirAndRoot(elementsForConnect[0], snapshot)
+    : { root: null, dir: 'LR' };
+  const mindmapDir = mindmapInfo.dir;
+
   const reconnectArrowStyle = makeArrowOptionsFromContext(
     snapshot,
     elementsForConnect
   );
 
-  // Endpoint helpers for broken/unbound arrows
   function getArrowEndpointAbs(arrow, atStart) {
     const idx = atStart ? 0 : arrow.points.length - 1;
     const p = arrow.points[idx];
@@ -1427,12 +1822,9 @@ if (userAction === 'connect') {
     return null;
   }
 
-  const centerY = el => el.y + el.height / 2;
-
-  // Desired edges = preserved edges among selected + inferred edges for true orphans
   const arrowInfosByPair = new Map(); // pair -> [{arrow, fullyBound}]
   const desiredPairs = new Set(); // "p->c"
-  const inCountWithinSelection = new Map(); // childId -> count (within selected)
+  const inCountWithinSelection = new Map(); // childId -> count
 
   const addDesiredPair = (pId, cId) => {
     const key = `${pId}->${cId}`;
@@ -1454,7 +1846,7 @@ if (userAction === 'connect') {
     arr.push(info);
   };
 
-  // 1) Preserve all existing edges among selected nodes
+  // 1) Preserve existing edges among selected nodes
   for (const a of snapshot.arrows) {
     if (a.isDeleted) continue;
 
@@ -1467,7 +1859,6 @@ if (userAction === 'connect') {
     if (sId && selectedIds.has(sId)) sEl = snapshot.byId.get(sId) || null;
     if (eId && selectedIds.has(eId)) eEl = snapshot.byId.get(eId) || null;
 
-    // fallback for broken arrows: endpoint hit-test into selected nodes
     if (!sEl) {
       const [sx, sy] = getArrowEndpointAbs(a, true);
       sEl = findSelectedContainingPoint(sx, sy);
@@ -1480,8 +1871,12 @@ if (userAction === 'connect') {
     if (!sEl || !eEl) continue;
     if (sEl.id === eEl.id) continue;
 
-    // mindmap direction: left -> right only
-    if (eEl.x <= sEl.x) continue;
+    // For LR/RL: keep directional feel. For BI: allow both sides.
+    if (mindmapDir === 'LR') {
+      if (!(centerX(eEl) > centerX(sEl))) continue;
+    } else if (mindmapDir === 'RL') {
+      if (!(centerX(eEl) < centerX(sEl))) continue;
+    }
 
     const pairKey = `${sEl.id}->${eEl.id}`;
     addDesiredPair(sEl.id, eEl.id);
@@ -1490,62 +1885,85 @@ if (userAction === 'connect') {
     addArrowInfo(pairKey, { arrow: a, fullyBound });
   }
 
-  // 2) Only infer a parent for a node if it is a “true orphan” globally:
-  // - no incoming arrows at all (even from outside selection)
-  // This prevents re-wiring when you selected a subset of a larger map.
-  function hasAnyIncomingArrow(el, snap) {
-    const inc = snap.incomingArrows.get(el.id) || [];
+  // 2) Infer only for true orphans (no incoming arrows anywhere)
+  function hasAnyIncomingArrow(el, snap2) {
+    const inc = snap2.incomingArrows.get(el.id) || [];
     return inc.some(a => !a.isDeleted);
   }
 
+  function forwardGap(parent, child, dir2) {
+    if (dir2 === 'LR') return child.x - (parent.x + parent.width);
+    return parent.x - (child.x + child.width);
+  }
+
+  function perpGap(parent, child) {
+    return Math.abs(centerY(parent) - centerY(child));
+  }
+
+  function isPotentialParent(parent, child, dir2) {
+    return forwardGap(parent, child, dir2) > 0;
+  }
+
   function findBestParentFor(childEl) {
-    const childLeftX = childEl.x;
-
-    const potentialParents = elementsForConnect.filter(p => {
-      const pr = p.x + p.width;
-      return p.id !== childEl.id && pr < childLeftX;
-    });
-    if (potentialParents.length === 0) return null;
-
-    // column-adjacent filter
-    const columnAdjacent = potentialParents.filter(p => {
-      const pr = p.x + p.width;
-      return !potentialParents.some(other => {
-        if (other.id === p.id) return false;
-        const or = other.x + other.width;
-        return other.x > pr && or < childLeftX;
-      });
-    });
-
-    const candidates =
-      columnAdjacent.length > 0 ? columnAdjacent : potentialParents;
-
     let best = null;
-    let bestGap = Infinity;
-    for (const p of candidates) {
-      const gap = Math.abs(centerY(p) - centerY(childEl));
-      if (gap < bestGap) {
-        bestGap = gap;
+    let bestScore = Infinity;
+
+    if (mindmapDir === 'BI') {
+      for (const p of elementsForConnect) {
+        if (p.id === childEl.id) continue;
+
+        const gapL = forwardGap(p, childEl, 'LR');
+        const gapR = forwardGap(p, childEl, 'RL');
+
+        let ok = false;
+        let gap = Infinity;
+        if (gapL > 0) {
+          ok = true;
+          gap = Math.min(gap, gapL);
+        }
+        if (gapR > 0) {
+          ok = true;
+          gap = Math.min(gap, gapR);
+        }
+        if (!ok) continue;
+
+        const score = gap + perpGap(p, childEl) * 0.5;
+        if (score < bestScore) {
+          bestScore = score;
+          best = p;
+        }
+      }
+      return best;
+    }
+
+    for (const p of elementsForConnect) {
+      if (p.id === childEl.id) continue;
+      if (!isPotentialParent(p, childEl, mindmapDir)) continue;
+      const score =
+        forwardGap(p, childEl, mindmapDir) + perpGap(p, childEl) * 0.5;
+      if (score < bestScore) {
+        bestScore = score;
         best = p;
       }
     }
+
     return best;
   }
 
   for (const el of elementsForConnect) {
     const inSel = inCountWithinSelection.get(el.id) || 0;
-    if (inSel > 0) continue; // already has a parent within selected => preserve
-    if (hasAnyIncomingArrow(el, snapshot)) continue; // has a parent somewhere else => do NOT infer
+    if (inSel > 0) continue;
+    if (hasAnyIncomingArrow(el, snapshot)) continue;
 
     const parent = findBestParentFor(el);
-    if (!parent) continue; // treat as root
+    if (!parent) continue;
     addDesiredPair(parent.id, el.id);
   }
 
-  // 3) Apply: keep good arrows; recreate broken/missing ones; do not disturb original edges
+  // 3) Apply repairs
   const arrowsToDelete = [];
   const arrowsToCenter = [];
-  const edgesToCreate = []; // [{pId,cId}]
+  const edgesToCreate = [];
 
   const getLive = id => snapshot.byId.get(id) || ea.getElement(id) || null;
 
@@ -1560,20 +1978,16 @@ if (userAction === 'connect') {
     const hasBound = snapshot.boundArrowPairs.has(pairKey);
 
     if (hasBound) {
-      // keep it; optionally center endpoints if your build supports focus/fixedPoint
       for (const info of infos) {
         if (info.fullyBound) arrowsToCenter.push(info.arrow);
       }
       continue;
     }
 
-    // If there are existing arrows for this pair (likely broken), delete them and recreate
     for (const info of infos) arrowsToDelete.push(info.arrow);
-
     edgesToCreate.push({ pId, cId });
   }
 
-  // Stage for edit
   const uniqById = arr => {
     const m = new Map();
     for (const x of arr) if (x && x.id) m.set(x.id, x);
@@ -1588,13 +2002,11 @@ if (userAction === 'connect') {
     ea.copyViewElementsToEAforEditing(editSet);
   } catch (_e) {}
 
-  // Delete broken arrows
   for (const a of arrowsToDelete) {
     const live = ea.getElement(a.id) || a;
     if (live) live.isDeleted = true;
   }
 
-  // Center endpoints on existing bound arrows (best-effort)
   for (const a of arrowsToCenter) {
     const live = ea.getElement(a.id) || a;
     if (!live || live.type !== 'arrow') continue;
@@ -1608,29 +2020,29 @@ if (userAction === 'connect') {
       const eEl = getLive(eId);
       if (!sEl || !eEl) continue;
 
-      const goRight = eEl.x + eEl.width / 2 >= sEl.x + sEl.width / 2;
+      const dirLRorRL = centerX(eEl) >= centerX(sEl) ? 'LR' : 'RL';
+      const { fpStart, fpEnd } = getSidesForDir(dirLRorRL);
 
       if (live.startBinding) {
         live.startBinding.focus = 0;
         if (live.startBinding.fixedPoint)
-          live.startBinding.fixedPoint = goRight ? [1, 0.5] : [0, 0.5];
+          live.startBinding.fixedPoint = fpStart;
       }
       if (live.endBinding) {
         live.endBinding.focus = 0;
-        if (live.endBinding.fixedPoint)
-          live.endBinding.fixedPoint = goRight ? [0, 0.5] : [1, 0.5];
+        if (live.endBinding.fixedPoint) live.endBinding.fixedPoint = fpEnd;
       }
     } catch (_e) {}
   }
 
-  // Create missing/repaired edges (use style that matches existing arrows)
   let createdCount = 0;
   for (const { pId, cId } of edgesToCreate) {
     const pEl = getLive(pId);
     const cEl = getLive(cId);
     if (!pEl || !cEl) continue;
 
-    addBoundArrowBetween(pEl, cEl, reconnectArrowStyle);
+    const dirLRorRL = centerX(cEl) >= centerX(pEl) ? 'LR' : 'RL';
+    addBoundArrowBetween(pEl, cEl, reconnectArrowStyle, dirLRorRL);
     snapshot.boundArrowPairs.add(`${pId}->${cId}`);
     createdCount++;
   }
