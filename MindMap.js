@@ -1233,20 +1233,41 @@ async function optimizeLayoutBiRoot(
     childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
   }
 
-  // ✅ Sequential split: first half goes Left (top->down), second half goes Right (top->down)
-  // E.g., children 1,2,3,4,5 -> Left: 1,2,3, Right: 4,5
-  // Store original order index to preserve correct sorting within each side
+  // ✅ Preserve current side assignment based on X position relative to root
+  // But if all children are on one side (e.g., from LR layout), split them
   const sideById = new Map(); // nodeId -> 'L'|'R'|'C'
   const originalOrderById = new Map(); // nodeId -> original order index (for root's direct children)
   sideById.set(rootEl.id, 'C');
 
+  const rootCx = centerX(rootEl);
   const rootKids = (childrenByParent.get(rootEl.id) || []).slice();
-  rootKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
 
-  const halfPoint = Math.ceil(rootKids.length / 2); // First half (rounded up) goes Left
-  for (let i = 0; i < rootKids.length; i++) {
-    sideById.set(rootKids[i], i < halfPoint ? 'L' : 'R');
-    originalOrderById.set(rootKids[i], i); // Store original order for correct sorting within side
+  // Separate children by their CURRENT side (based on X position)
+  let leftKids = rootKids.filter(id => centerX(byId.get(id)) < rootCx);
+  let rightKids = rootKids.filter(id => centerX(byId.get(id)) >= rootCx);
+
+  // If all children are on one side, do sequential split (first half left, second half right)
+  if (leftKids.length === 0 || rightKids.length === 0) {
+    // Sort all by Y and split
+    const allSorted = rootKids.slice().sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+    const halfPoint = Math.ceil(allSorted.length / 2);
+    leftKids = allSorted.slice(0, halfPoint);
+    rightKids = allSorted.slice(halfPoint);
+  } else {
+    // Sort each side by Y to preserve order within side
+    leftKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+    rightKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+  }
+
+  // Assign sides and order indices
+  let orderIdx = 0;
+  for (const id of leftKids) {
+    sideById.set(id, 'L');
+    originalOrderById.set(id, orderIdx++);
+  }
+  for (const id of rightKids) {
+    sideById.set(id, 'R');
+    originalOrderById.set(id, orderIdx++);
   }
 
   // Descendants inherit side from their parent
