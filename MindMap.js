@@ -999,12 +999,9 @@ async function optimizeLayoutSingleDir(
   levelSpacing,
   siblingSpacing
 ) {
-  const { nodes, edges } = collectSubtree(
-    subtreeRootEl,
-    snap,
-    mindmapDir,
-    mindmapRoot
-  );
+  // Use collectSubtreeAllOut to include ALL children regardless of current position
+  // This is critical when switching from BI to LR/RL, as children may be on the "wrong" side
+  const { nodes, edges } = collectSubtreeAllOut(subtreeRootEl, snap);
 
   if (!nodes || nodes.length <= 1) {
     new Notice('Nothing to optimize (no children found).');
@@ -1019,8 +1016,21 @@ async function optimizeLayoutSingleDir(
     childrenByParent.get(e.parentId).push(e.childId);
   }
 
+  // For root's direct children, sort by side first (left then right), then by Y within each side
+  // This preserves order when switching from BI to LR/RL
+  const rootCx = centerX(subtreeRootEl);
   for (const [pId, childIds] of childrenByParent.entries()) {
-    childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+    if (pId === subtreeRootEl.id) {
+      // Root's direct children: left side first (sorted by Y), then right side (sorted by Y)
+      const leftKids = childIds.filter(id => centerX(byId.get(id)) < rootCx);
+      const rightKids = childIds.filter(id => centerX(byId.get(id)) >= rootCx);
+      leftKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+      rightKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+      childIds.length = 0;
+      childIds.push(...leftKids, ...rightKids);
+    } else {
+      childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+    }
   }
 
   function countLeaves(id) {
@@ -1221,15 +1231,20 @@ async function optimizeLayoutBiRoot(
     childIds.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
   }
 
-  // ✅ Force split: root’s direct children alternate by Y order (R, L, R, L...)
+  // ✅ Sequential split: first half goes Left (top->down), second half goes Right (top->down)
+  // E.g., children 1,2,3,4,5 -> Left: 1,2,3, Right: 4,5
+  // Store original order index to preserve correct sorting within each side
   const sideById = new Map(); // nodeId -> 'L'|'R'|'C'
+  const originalOrderById = new Map(); // nodeId -> original order index (for root's direct children)
   sideById.set(rootEl.id, 'C');
 
   const rootKids = (childrenByParent.get(rootEl.id) || []).slice();
   rootKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
 
+  const halfPoint = Math.ceil(rootKids.length / 2); // First half (rounded up) goes Left
   for (let i = 0; i < rootKids.length; i++) {
-    sideById.set(rootKids[i], i % 2 === 0 ? 'R' : 'L');
+    sideById.set(rootKids[i], i < halfPoint ? 'L' : 'R');
+    originalOrderById.set(rootKids[i], i); // Store original order for correct sorting within side
   }
 
   // Descendants inherit side from their parent
@@ -1322,8 +1337,8 @@ async function optimizeLayoutBiRoot(
     );
     if (kids.length === 0) return;
 
-    // Stable order
-    kids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
+    // Sort by original order index to preserve correct order within each side
+    kids.sort((a, b) => (originalOrderById.get(a) || 0) - (originalOrderById.get(b) || 0));
 
     // Collect all leaf heights on this side
     const leafHeights = [];
@@ -1831,7 +1846,13 @@ if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
       const editableRoot = ea.getElement(trueRoot.id) || trueRoot;
       writeMindmapDirToRoot_EDITABLE(editableRoot, newDir);
       await ea.addElementsToView(false, false, true);
-      new Notice(`Mindmap direction set to ${newDir} (on root).`);
+      new Notice(`Mindmap direction set to ${newDir} (on root). Optimizing layout...`);
+
+      // Automatically optimize layout after changing direction
+      // Must get the updated root from fresh snapshot (with new direction stored)
+      const freshSnap = snapshotCanvas();
+      const updatedRoot = freshSnap.byId.get(trueRoot.id) || trueRoot;
+      await optimizeLayout(updatedRoot, freshSnap);
     } catch (_e) {
       new Notice('Failed to set mindmap direction.');
     }
