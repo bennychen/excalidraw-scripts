@@ -724,9 +724,7 @@ async function groupSubtree(rootEl, snap, mindmapDir, mindmapRoot) {
   for (const el of elementsToGroup) if (el && el.id) uniq.set(el.id, el);
   const uniqElementsToGroup = Array.from(uniq.values());
 
-  const elementIdsToGroup = uniqElementsToGroup
-    .filter(el => el.type !== 'arrow' && el.type !== 'line')
-    .map(el => el.id);
+  const elementIdsToGroup = uniqElementsToGroup.map(el => el.id);
 
   const addBox = settings['Box selected'].value;
 
