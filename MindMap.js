@@ -1792,12 +1792,13 @@ if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
     [
       'Group',
       'Copy to clipboard',
+      'Select subtree',
       'Add Child',
       'Add Sibling',
       'Optimize layout',
       'Set mindmap direction',
     ],
-    ['group', 'copy', 'child', 'sibling', 'optimize', 'setdir'],
+    ['group', 'copy', 'select', 'child', 'sibling', 'optimize', 'setdir'],
     `Choose action (dir: ${mindmapDir})`
   );
 
@@ -1812,6 +1813,32 @@ if (selectedElements.length === 1 && selectedElements[0].type === 'text') {
 
   if (action === 'copy') {
     await copyOutlineToClipboard(selectedEl, snapshot, mindmapDir, mindmapRoot);
+    return;
+  }
+
+  if (action === 'select') {
+    // Collect all elements in the subtree (nodes + arrows)
+    const childElements = getChildElementsForGrouping(
+      selectedEl,
+      snapshot,
+      mindmapDir,
+      mindmapRoot
+    );
+    const elementsToSelect = [selectedEl].concat(childElements);
+
+    // Deduplicate
+    const uniq = new Map();
+    for (const el of elementsToSelect) if (el && el.id) uniq.set(el.id, el);
+    const uniqElements = Array.from(uniq.values());
+
+    // Select all elements in the view
+    const api = ea.getExcalidrawAPI();
+    if (api && typeof api.selectElements === 'function') {
+      api.selectElements(uniqElements);
+      new Notice(`Selected ${uniqElements.length} elements (subtree).`);
+    } else {
+      new Notice('Unable to select elements (API not available).');
+    }
     return;
   }
 
