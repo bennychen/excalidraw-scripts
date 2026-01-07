@@ -292,18 +292,20 @@ function readMindmapDirFromRoot(rootEl) {
 function writeMindmapDirToRoot_EDITABLE(rootElEditable, dir) {
   const d = normalizeDir(dir) || 'LR';
 
+  // Store direction in customData only (invisible to user)
   try {
     rootElEditable.customData = rootElEditable.customData || {};
     rootElEditable.customData.mindmap = rootElEditable.customData.mindmap || {};
     rootElEditable.customData.mindmap.dir = d;
   } catch (_e) {}
 
+  // Clear any existing mindmap link (from older versions) to avoid visible link
   try {
     const link = rootElEditable.link;
     const isMindmapLink =
       typeof link === 'string' && /^(mindmap|mm):\/\//i.test(link || '');
-    if (!link || isMindmapLink) {
-      rootElEditable.link = `mindmap://dir=${d}`;
+    if (isMindmapLink) {
+      rootElEditable.link = null; // Remove the visible link
     }
   } catch (_e) {}
 }
