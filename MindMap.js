@@ -1035,10 +1035,29 @@ async function optimizeLayoutSingleDir(
 
   const pos = new Map(); // id -> {x,y}
 
+  // First pass: compute total height needed for all leaves (edge-to-edge spacing)
+  function collectLeafHeights(id, heights) {
+    const el = byId.get(id);
+    if (!el) return;
+    const kids = childrenByParent.get(id) || [];
+    if (kids.length === 0) {
+      heights.push(el.height);
+    } else {
+      for (const k of kids) collectLeafHeights(k, heights);
+    }
+  }
+
+  const leafHeights = [];
+  collectLeafHeights(subtreeRootEl.id, leafHeights);
+
+  // Total span = sum of all leaf heights + spacing gaps between them
+  const totalHeightSum = leafHeights.reduce((a, b) => a + b, 0);
+  const totalGaps = Math.max(0, leafHeights.length - 1) * siblingSpacing;
+  const totalSpan = totalHeightSum + totalGaps;
+
   const rootCenterY = centerY(subtreeRootEl);
-  const leafCount = countLeaves(subtreeRootEl.id);
-  const totalSpan = (leafCount - 1) * siblingSpacing;
-  let nextLeafCenterY = rootCenterY - totalSpan / 2;
+  // Start from top edge of the first leaf
+  let nextLeafTopY = rootCenterY - totalSpan / 2;
 
   function assignY(id) {
     const el = byId.get(id);
@@ -1047,11 +1066,11 @@ async function optimizeLayoutSingleDir(
     const kids = childrenByParent.get(id) || [];
 
     if (kids.length === 0) {
-      const yTopLeft = nextLeafCenterY - el.height / 2;
+      // Place leaf at nextLeafTopY (top edge), then advance by its height + spacing
       const cur = pos.get(id) || { x: el.x, y: el.y };
-      cur.y = yTopLeft;
+      cur.y = nextLeafTopY;
       pos.set(id, cur);
-      nextLeafCenterY += siblingSpacing;
+      nextLeafTopY += el.height + siblingSpacing;
       return;
     }
 
@@ -1259,11 +1278,11 @@ async function optimizeLayoutBiRoot(
     const kids = childrenOnSameSide(id, side);
 
     if (kids.length === 0) {
-      const yTopLeft = ctx.nextLeafCenterY - el.height / 2;
+      // Place leaf at nextLeafTopY (top edge), then advance by its height + spacing
       const cur = pos.get(id) || { x: el.x, y: el.y };
-      cur.y = yTopLeft;
+      cur.y = ctx.nextLeafTopY;
       pos.set(id, cur);
-      ctx.nextLeafCenterY += siblingSpacing;
+      ctx.nextLeafTopY += el.height + siblingSpacing;
       return;
     }
 
@@ -1287,6 +1306,18 @@ async function optimizeLayoutBiRoot(
     pos.set(id, cur);
   }
 
+  // Collect leaf heights for a side
+  function collectLeafHeightsSide(id, side, heights) {
+    const el = byId.get(id);
+    if (!el) return;
+    const kids = childrenOnSameSide(id, side);
+    if (kids.length === 0) {
+      heights.push(el.height);
+    } else {
+      for (const k of kids) collectLeafHeightsSide(k, side, heights);
+    }
+  }
+
   function layoutSide(side) {
     const kids = (childrenByParent.get(rootEl.id) || []).filter(
       kId => (sideById.get(kId) || 'R') === side
@@ -1296,12 +1327,16 @@ async function optimizeLayoutBiRoot(
     // Stable order
     kids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
 
-    // Total leaves only on this side
-    let totalLeaves = 0;
-    for (const k of kids) totalLeaves += countLeavesSide(k, side);
+    // Collect all leaf heights on this side
+    const leafHeights = [];
+    for (const k of kids) collectLeafHeightsSide(k, side, leafHeights);
 
-    const totalSpan = (totalLeaves - 1) * siblingSpacing;
-    const ctx = { nextLeafCenterY: rootCenterY - totalSpan / 2 };
+    // Total span = sum of all leaf heights + spacing gaps between them
+    const totalHeightSum = leafHeights.reduce((a, b) => a + b, 0);
+    const totalGaps = Math.max(0, leafHeights.length - 1) * siblingSpacing;
+    const totalSpan = totalHeightSum + totalGaps;
+
+    const ctx = { nextLeafTopY: rootCenterY - totalSpan / 2 };
 
     for (const k of kids) assignYSide(k, side, ctx);
   }
@@ -1582,17 +1617,34 @@ if (
       return sum;
     }
 
-    const totalLeaves = countLeaves(rootNode);
-    const totalSpan = (totalLeaves - 1) * siblingSpacing;
-    let nextLeafCenterY = centerY(rootEl) - totalSpan / 2;
+    // Collect all leaf heights for edge-to-edge spacing
+    function collectLeafHeights(node, heights) {
+      const kids = childrenMap.get(node) || [];
+      if (kids.length === 0) {
+        heights.push(node.element.height);
+      } else {
+        for (const c of kids) collectLeafHeights(c, heights);
+      }
+    }
+
+    const leafHeights = [];
+    collectLeafHeights(rootNode, leafHeights);
+
+    // Total span = sum of all leaf heights + spacing gaps between them
+    const totalHeightSum = leafHeights.reduce((a, b) => a + b, 0);
+    const totalGaps = Math.max(0, leafHeights.length - 1) * siblingSpacing;
+    const totalSpan = totalHeightSum + totalGaps;
+
+    let nextLeafTopY = centerY(rootEl) - totalSpan / 2;
 
     function assignY(node) {
       const el = node.element;
       const kids = childrenMap.get(node) || [];
 
       if (kids.length === 0) {
-        el.y = nextLeafCenterY - el.height / 2;
-        nextLeafCenterY += siblingSpacing;
+        // Place leaf at nextLeafTopY (top edge), then advance by its height + spacing
+        el.y = nextLeafTopY;
+        nextLeafTopY += el.height + siblingSpacing;
         return;
       }
 
