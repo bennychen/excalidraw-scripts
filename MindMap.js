@@ -1593,28 +1593,40 @@ if (
     return choice === null ? defaultDir : choice;
   }
 
-  function createTextOptions() {
+  function createTextOptions(sourceEl) {
+    // Copy style from source text element if available
     return {
-      fontFamily: 5,
-      fontSize: 20,
-      textAlign: 'center',
-      roughness: 2,
-      strokeWidth: 1,
-      strokeStyle: 'solid',
-      strokeSharpness: 'sharp',
-      backgroundColor: 'transparent',
-      fillStyle: 'solid',
-      strokeColor: '#000000',
-      opacity: 100,
-      handDrawn: true,
-      isHandDrawn: true,
+      fontFamily: sourceEl?.fontFamily ?? 5,
+      fontSize: sourceEl?.fontSize ?? 20,
+      textAlign: sourceEl?.textAlign ?? 'center',
+      roughness: sourceEl?.roughness ?? 2,
+      strokeWidth: sourceEl?.strokeWidth ?? 1,
+      strokeStyle: sourceEl?.strokeStyle ?? 'solid',
+      strokeSharpness: sourceEl?.strokeSharpness ?? 'sharp',
+      backgroundColor: sourceEl?.backgroundColor ?? 'transparent',
+      fillStyle: sourceEl?.fillStyle ?? 'solid',
+      strokeColor: sourceEl?.strokeColor ?? '#000000',
+      opacity: sourceEl?.opacity ?? 100,
+      handDrawn: sourceEl?.handDrawn ?? true,
+      isHandDrawn: sourceEl?.isHandDrawn ?? true,
     };
   }
 
   async function buildMindmapFromBullets(rootNode, originalTextEl) {
     const dir = await chooseDirection('LR');
     const { levelSpacing, siblingSpacing } = getAxisSpacing();
-    const textOptions = createTextOptions();
+    const textOptions = createTextOptions(originalTextEl); // Use original text's style
+
+    // Apply style to ea.style so addText uses these properties
+    ea.style.fontFamily = textOptions.fontFamily;
+    ea.style.fontSize = textOptions.fontSize;
+    ea.style.strokeColor = textOptions.strokeColor;
+    ea.style.strokeWidth = textOptions.strokeWidth;
+    ea.style.strokeStyle = textOptions.strokeStyle;
+    ea.style.roughness = textOptions.roughness;
+    ea.style.backgroundColor = textOptions.backgroundColor;
+    ea.style.fillStyle = textOptions.fillStyle;
+    ea.style.opacity = textOptions.opacity;
 
     // Create elements for measurement
     function createElements(node) {
@@ -1663,45 +1675,15 @@ if (
       }
     }
 
-    const leafHeights = [];
-    collectLeafHeights(rootNode, leafHeights);
-
-    // Total span = sum of all leaf heights + spacing gaps between them
-    const totalHeightSum = leafHeights.reduce((a, b) => a + b, 0);
-    const totalGaps = Math.max(0, leafHeights.length - 1) * siblingSpacing;
-    const totalSpan = totalHeightSum + totalGaps;
-
-    let nextLeafTopY = centerY(rootEl) - totalSpan / 2;
-
-    function assignY(node) {
-      const el = node.element;
-      const kids = childrenMap.get(node) || [];
-
-      if (kids.length === 0) {
-        // Place leaf at nextLeafTopY (top edge), then advance by its height + spacing
-        el.y = nextLeafTopY;
-        nextLeafTopY += el.height + siblingSpacing;
-        return;
-      }
-
-      for (const c of kids) assignY(c);
-
-      const first = kids[0].element;
-      const last = kids[kids.length - 1].element;
-      const myCenter = (centerY(first) + centerY(last)) / 2;
-      el.y = myCenter - el.height / 2;
-    }
-
-    assignY(rootNode);
-
-    // BI: alternate root children L/R; descendants inherit
+    // Assign sides first (needed for BI per-side layout)
     const sideByNode = new Map();
     sideByNode.set(rootNode, 'C');
 
     if (dir === 'BI') {
       const rootKids = childrenMap.get(rootNode) || [];
+      const halfPoint = Math.ceil(rootKids.length / 2);
       for (let i = 0; i < rootKids.length; i++) {
-        sideByNode.set(rootKids[i], i % 2 === 0 ? 'R' : 'L');
+        sideByNode.set(rootKids[i], i < halfPoint ? 'L' : 'R');
       }
 
       (function propagate(n) {
@@ -1714,6 +1696,91 @@ if (
           propagate(c);
         }
       })(rootNode);
+    }
+
+    // For BI, collect leaf heights per side
+    function collectLeafHeightsForSide(node, side, heights) {
+      const kids = childrenMap.get(node) || [];
+      const sideKids = kids.filter(c => sideByNode.get(c) === side);
+      if (sideKids.length === 0) {
+        heights.push(node.element.height);
+      } else {
+        for (const c of sideKids) collectLeafHeightsForSide(c, side, heights);
+      }
+    }
+
+    if (dir === 'BI') {
+      // Layout each side independently
+      const rootKids = childrenMap.get(rootNode) || [];
+      const leftKids = rootKids.filter(c => sideByNode.get(c) === 'L');
+      const rightKids = rootKids.filter(c => sideByNode.get(c) === 'R');
+
+      function layoutSide(sideKids, side) {
+        if (sideKids.length === 0) return;
+
+        // Collect leaf heights for this side
+        const heights = [];
+        for (const kid of sideKids) collectLeafHeightsForSide(kid, side, heights);
+
+        const totalHeightSum = heights.reduce((a, b) => a + b, 0);
+        const totalGaps = Math.max(0, heights.length - 1) * siblingSpacing;
+        const totalSpan = totalHeightSum + totalGaps;
+
+        let nextLeafTopY = centerY(rootEl) - totalSpan / 2;
+
+        function assignYSide(node) {
+          const el = node.element;
+          const kids = (childrenMap.get(node) || []).filter(c => sideByNode.get(c) === side);
+
+          if (kids.length === 0) {
+            el.y = nextLeafTopY;
+            nextLeafTopY += el.height + siblingSpacing;
+            return;
+          }
+
+          for (const c of kids) assignYSide(c);
+
+          const first = kids[0].element;
+          const last = kids[kids.length - 1].element;
+          const myCenter = (centerY(first) + centerY(last)) / 2;
+          el.y = myCenter - el.height / 2;
+        }
+
+        for (const kid of sideKids) assignYSide(kid);
+      }
+
+      layoutSide(leftKids, 'L');
+      layoutSide(rightKids, 'R');
+    } else {
+      // LR/RL: single layout for all
+      const leafHeights = [];
+      collectLeafHeights(rootNode, leafHeights);
+
+      const totalHeightSum = leafHeights.reduce((a, b) => a + b, 0);
+      const totalGaps = Math.max(0, leafHeights.length - 1) * siblingSpacing;
+      const totalSpan = totalHeightSum + totalGaps;
+
+      let nextLeafTopY = centerY(rootEl) - totalSpan / 2;
+
+      function assignY(node) {
+        const el = node.element;
+        const kids = childrenMap.get(node) || [];
+
+        if (kids.length === 0) {
+          el.y = nextLeafTopY;
+          nextLeafTopY += el.height + siblingSpacing;
+          return;
+        }
+
+        for (const c of kids) assignY(c);
+
+        const first = kids[0].element;
+        const last = kids[kids.length - 1].element;
+        const myCenter = (centerY(first) + centerY(last)) / 2;
+        el.y = myCenter - el.height / 2;
+      }
+
+      assignY(rootNode);
     }
 
     function assignX(node) {
