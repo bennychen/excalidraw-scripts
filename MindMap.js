@@ -47,6 +47,11 @@ const defaultSettings = {
     value: 100,
     description: 'Vertical spacing between sibling nodes. Used for LR/RL/BI.',
   },
+  'Root font size': {
+    value: 'XL',
+    valueset: ['Same as text', 'S', 'M', 'L', 'XL', 'XXL'],
+    description: 'Font size for the root node to make it visually distinct.',
+  },
 };
 
 // Clear old unused settings
@@ -929,6 +934,28 @@ async function insertNode(selectedEl, snap, mode /* 'child'|'sibling' */) {
 // - LR/RL: subtree layout
 // - BI: ALWAYS optimize the true root, and FORCE split root children left/right
 // -----------------------------------------------------
+
+// Helper to update root node font size based on settings
+async function updateRootFontSize(rootEl) {
+  const fontSizeMap = { S: 16, M: 20, L: 28, XL: 36, XXL: 48 };
+  const rootFontSizeSetting = settings['Root font size']?.value || 'XL';
+  
+  if (rootFontSizeSetting === 'Same as text') return; // Don't change
+  
+  const targetFontSize = fontSizeMap[rootFontSizeSetting] || 36;
+  
+  // Check if root already has the correct font size
+  if (rootEl.fontSize === targetFontSize) return;
+  
+  // Update root font size
+  ea.copyViewElementsToEAforEditing([rootEl]);
+  const editableRoot = ea.getElement(rootEl.id);
+  if (editableRoot && editableRoot.type === 'text') {
+    editableRoot.fontSize = targetFontSize;
+    await ea.addElementsToView(false, false, true);
+  }
+}
+
 async function optimizeLayout(subtreeRootEl, snap) {
   const { root: mindmapRoot, dir: mindmapDir } = getMindmapDirAndRoot(
     subtreeRootEl,
@@ -936,26 +963,36 @@ async function optimizeLayout(subtreeRootEl, snap) {
   );
   const { levelSpacing, siblingSpacing } = getAxisSpacing();
 
+  // Update root font size FIRST (before layout optimization)
+  const rootToUpdate = mindmapRoot || subtreeRootEl;
+  await updateRootFontSize(rootToUpdate);
+  
+  // Re-snapshot after font size change so layout uses updated dimensions
   snap = snapshotCanvas();
+  
+  // Get the updated root element with new dimensions
+  const updatedRoot = snap.byId.get(rootToUpdate.id) || rootToUpdate;
 
   // ✅ BI is global: always optimize root, so we can split children on both sides
   if (mindmapDir === 'BI' && mindmapRoot) {
+    const updatedMindmapRoot = snap.byId.get(mindmapRoot.id) || mindmapRoot;
     await optimizeLayoutBiRoot(
-      mindmapRoot,
+      updatedMindmapRoot,
       snap,
       mindmapDir,
-      mindmapRoot,
+      updatedMindmapRoot,
       levelSpacing,
       siblingSpacing
     );
     return;
   }
 
+  const updatedSubtreeRoot = snap.byId.get(subtreeRootEl.id) || subtreeRootEl;
   await optimizeLayoutSingleDir(
-    subtreeRootEl,
+    updatedSubtreeRoot,
     snap,
     mindmapDir,
-    mindmapRoot,
+    mindmapRoot ? (snap.byId.get(mindmapRoot.id) || mindmapRoot) : null,
     mindmapDir,
     levelSpacing,
     siblingSpacing
@@ -1106,15 +1143,37 @@ async function optimizeLayoutSingleDir(
 
   assignY(subtreeRootEl.id);
 
-  // Preserve subtree root's Y (top-left)
-  const computedRoot = pos.get(subtreeRootEl.id) || {
-    x: subtreeRootEl.x,
-    y: subtreeRootEl.y,
-  };
-  const deltaY = subtreeRootEl.y - computedRoot.y;
-  for (const [id, p] of pos.entries()) {
-    p.y += deltaY;
-    pos.set(id, p);
+  // Special case: if root has only 1 direct child, center that child with the root
+  const rootKids = childrenByParent.get(subtreeRootEl.id) || [];
+  if (rootKids.length === 1) {
+    const singleChildId = rootKids[0];
+    const singleChildEl = byId.get(singleChildId);
+    if (singleChildEl) {
+      const singleChildPos = pos.get(singleChildId);
+      const singleChildCenterY = singleChildPos ? singleChildPos.y + singleChildEl.height / 2 : 0;
+      const shift = rootCenterY - singleChildCenterY;
+      
+      // Shift all positioned nodes except root
+      function shiftSubtree(id) {
+        if (id === subtreeRootEl.id) return;
+        const p = pos.get(id);
+        if (p) p.y += shift;
+        const kids = childrenByParent.get(id) || [];
+        for (const c of kids) shiftSubtree(c);
+      }
+      shiftSubtree(singleChildId);
+    }
+  } else {
+    // Preserve subtree root's Y (top-left) - shift all children to maintain root position
+    const computedRoot = pos.get(subtreeRootEl.id) || {
+      x: subtreeRootEl.x,
+      y: subtreeRootEl.y,
+    };
+    const deltaY = subtreeRootEl.y - computedRoot.y;
+    for (const [id, p] of pos.entries()) {
+      p.y += deltaY;
+      pos.set(id, p);
+    }
   }
 
   function assignX(id) {
@@ -1246,13 +1305,38 @@ async function optimizeLayoutBiRoot(
   let leftKids = rootKids.filter(id => centerX(byId.get(id)) < rootCx);
   let rightKids = rootKids.filter(id => centerX(byId.get(id)) >= rootCx);
 
-  // If all children are on one side, do sequential split (first half left, second half right)
+  // Helper to count leaves in a subtree by id
+  function countLeavesById(id) {
+    const kids = childrenByParent.get(id) || [];
+    if (kids.length === 0) return 1;
+    let sum = 0;
+    for (const k of kids) sum += countLeavesById(k);
+    return sum;
+  }
+
+  // If all children are on one side, do leaf-count balanced split
   if (leftKids.length === 0 || rightKids.length === 0) {
-    // Sort all by Y and split
+    // Sort all by Y
     const allSorted = rootKids.slice().sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
-    const halfPoint = Math.ceil(allSorted.length / 2);
-    leftKids = allSorted.slice(0, halfPoint);
-    rightKids = allSorted.slice(halfPoint);
+    // Balance by leaf count instead of child index
+    const totalLeaves = allSorted.reduce((sum, id) => sum + countLeavesById(id), 0);
+    const halfLeaves = Math.ceil(totalLeaves / 2);
+    let leftSum = 0;
+    leftKids = [];
+    rightKids = [];
+    for (let i = 0; i < allSorted.length; i++) {
+      const leaves = countLeavesById(allSorted[i]);
+      if (leftSum + leaves <= halfLeaves && i < allSorted.length - 1) {
+        leftKids.push(allSorted[i]);
+        leftSum += leaves;
+      } else if (leftSum === 0) {
+        // Ensure at least one child on left
+        leftKids.push(allSorted[i]);
+        leftSum += leaves;
+      } else {
+        rightKids.push(allSorted[i]);
+      }
+    }
   } else {
     // Sort each side by Y to preserve order within side
     leftKids.sort((a, b) => (byId.get(a)?.y || 0) - (byId.get(b)?.y || 0));
@@ -1362,6 +1446,42 @@ async function optimizeLayoutBiRoot(
 
     // Sort by original order index to preserve correct order within each side
     kids.sort((a, b) => (originalOrderById.get(a) || 0) - (originalOrderById.get(b) || 0));
+
+    // Special case: if only 1 direct child on this side, center IT with the root
+    if (kids.length === 1) {
+      const singleKid = kids[0];
+      const singleEl = byId.get(singleKid);
+      if (singleEl) {
+        // Layout the subtree first using normal algorithm
+        const subtreeLeafHeights = [];
+        collectLeafHeightsSide(singleKid, side, subtreeLeafHeights);
+        const totalHeightSum = subtreeLeafHeights.reduce((a, b) => a + b, 0);
+        const totalGaps = Math.max(0, subtreeLeafHeights.length - 1) * siblingSpacing;
+        const totalSpan = totalHeightSum + totalGaps;
+        
+        // Position leaves starting from arbitrary point (we'll adjust after)
+        const ctx = { nextLeafTopY: 0 };
+        assignYSide(singleKid, side, ctx);
+        
+        // Now calculate where the singleKid ended up
+        const singleKidPos = pos.get(singleKid);
+        const singleKidCenterY = singleKidPos ? singleKidPos.y + singleEl.height / 2 : 0;
+        
+        // We want singleKid to be at rootCenterY, so shift everything
+        const shift = rootCenterY - singleKidCenterY;
+        
+        // Apply shift to all positioned nodes in this subtree
+        function shiftSubtree(id) {
+          const p = pos.get(id);
+          if (p) p.y += shift;
+          const childIds = childrenOnSameSide(id, side);
+          for (const c of childIds) shiftSubtree(c);
+        }
+        shiftSubtree(singleKid);
+        
+        return;
+      }
+    }
 
     // Collect all leaf heights on this side
     const leafHeights = [];
@@ -1617,6 +1737,13 @@ if (
     const { levelSpacing, siblingSpacing } = getAxisSpacing();
     const textOptions = createTextOptions(originalTextEl); // Use original text's style
 
+    // Font size mapping for root node
+    const fontSizeMap = { S: 16, M: 20, L: 28, XL: 36, XXL: 48 };
+    const rootFontSizeSetting = settings['Root font size']?.value || 'XL';
+    const rootFontSize = rootFontSizeSetting === 'Same as text' 
+      ? textOptions.fontSize 
+      : (fontSizeMap[rootFontSizeSetting] || 36);
+
     // Apply style to ea.style so addText uses these properties
     ea.style.fontFamily = textOptions.fontFamily;
     ea.style.fontSize = textOptions.fontSize;
@@ -1629,12 +1756,19 @@ if (
     ea.style.opacity = textOptions.opacity;
 
     // Create elements for measurement
-    function createElements(node) {
-      const id = ea.addText(0, 0, node.label, textOptions);
+    function createElements(node, isRoot = false) {
+      const nodeTextOptions = { ...textOptions };
+      if (isRoot) {
+        nodeTextOptions.fontSize = rootFontSize;
+        ea.style.fontSize = rootFontSize;
+      } else {
+        ea.style.fontSize = textOptions.fontSize;
+      }
+      const id = ea.addText(0, 0, node.label, nodeTextOptions);
       node.element = ea.getElement(id);
-      for (const c of node.children || []) createElements(c);
+      for (const c of node.children || []) createElements(c, false);
     }
-    createElements(rootNode);
+    createElements(rootNode, true);
 
     const sourceTextX = originalTextEl.x;
     const sourceTextY = originalTextEl.y;
@@ -1681,9 +1815,22 @@ if (
 
     if (dir === 'BI') {
       const rootKids = childrenMap.get(rootNode) || [];
-      const halfPoint = Math.ceil(rootKids.length / 2);
+      // Balance by leaf count instead of child index
+      const totalLeaves = rootKids.reduce((sum, k) => sum + countLeaves(k), 0);
+      const halfLeaves = Math.ceil(totalLeaves / 2);
+      let leftSum = 0;
       for (let i = 0; i < rootKids.length; i++) {
-        sideByNode.set(rootKids[i], i < halfPoint ? 'L' : 'R');
+        const leaves = countLeaves(rootKids[i]);
+        if (leftSum + leaves <= halfLeaves && i < rootKids.length - 1) {
+          sideByNode.set(rootKids[i], 'L');
+          leftSum += leaves;
+        } else if (leftSum === 0) {
+          // Ensure at least one child on left
+          sideByNode.set(rootKids[i], 'L');
+          leftSum += leaves;
+        } else {
+          sideByNode.set(rootKids[i], 'R');
+        }
       }
 
       (function propagate(n) {
@@ -1726,8 +1873,6 @@ if (
         const totalGaps = Math.max(0, heights.length - 1) * siblingSpacing;
         const totalSpan = totalHeightSum + totalGaps;
 
-        let nextLeafTopY = centerY(rootEl) - totalSpan / 2;
-
         function assignYSide(node) {
           const el = node.element;
           const kids = (childrenMap.get(node) || []).filter(c => sideByNode.get(c) === side);
@@ -1746,6 +1891,33 @@ if (
           el.y = myCenter - el.height / 2;
         }
 
+        // Special case: if only 1 direct child on this side, center IT with the root
+        if (sideKids.length === 1) {
+          const singleKid = sideKids[0];
+          const singleEl = singleKid.element;
+          
+          // Layout the subtree first at arbitrary position
+          let nextLeafTopY = 0;
+          assignYSide(singleKid);
+          
+          // Calculate where the single child ended up
+          const singleKidCenterY = singleEl.y + singleEl.height / 2;
+          
+          // We want singleKid to be at root center, so shift everything
+          const shift = centerY(rootEl) - singleKidCenterY;
+          
+          // Apply shift to all nodes in this subtree
+          function shiftSubtree(node) {
+            node.element.y += shift;
+            const kids = (childrenMap.get(node) || []).filter(c => sideByNode.get(c) === side);
+            for (const c of kids) shiftSubtree(c);
+          }
+          shiftSubtree(singleKid);
+          return;
+        }
+
+        // Normal case: center subtree span at root center
+        let nextLeafTopY = centerY(rootEl) - totalSpan / 2;
         for (const kid of sideKids) assignYSide(kid);
       }
 
@@ -1781,6 +1953,23 @@ if (
       }
 
       assignY(rootNode);
+
+      // Special case: if root has only 1 direct child, center that child with the root
+      const rootKids = childrenMap.get(rootNode) || [];
+      if (rootKids.length === 1) {
+        const singleChild = rootKids[0];
+        const singleChildEl = singleChild.element;
+        const singleChildCenterY = singleChildEl.y + singleChildEl.height / 2;
+        const shift = centerY(rootEl) - singleChildCenterY;
+        
+        // Shift all nodes except root
+        function shiftSubtree(node) {
+          node.element.y += shift;
+          const kids = childrenMap.get(node) || [];
+          for (const c of kids) shiftSubtree(c);
+        }
+        shiftSubtree(singleChild);
+      }
     }
 
     function assignX(node) {
