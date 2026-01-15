@@ -856,6 +856,24 @@ async function insertNode(selectedEl, snap, mode /* 'child'|'sibling' */) {
   const textOptions = makeTextOptionsFromSource(selectedEl);
   const arrowOptions = makeArrowOptionsFromSource(parentEl, snap);
 
+  // Apply text styling via ea.style before creating node
+  if (typeof textOptions.fontFamily !== 'undefined')
+    ea.style.fontFamily = textOptions.fontFamily;
+  if (typeof textOptions.fontSize !== 'undefined')
+    ea.style.fontSize = textOptions.fontSize;
+  if (typeof textOptions.strokeColor !== 'undefined')
+    ea.style.strokeColor = textOptions.strokeColor;
+  if (typeof textOptions.backgroundColor !== 'undefined')
+    ea.style.backgroundColor = textOptions.backgroundColor;
+  if (typeof textOptions.fillStyle !== 'undefined')
+    ea.style.fillStyle = textOptions.fillStyle;
+  if (typeof textOptions.strokeWidth !== 'undefined')
+    ea.style.strokeWidth = textOptions.strokeWidth;
+  if (typeof textOptions.strokeStyle !== 'undefined')
+    ea.style.strokeStyle = textOptions.strokeStyle;
+  if (typeof textOptions.roughness !== 'undefined')
+    ea.style.roughness = textOptions.roughness;
+
   // Create node first to know width
   const newId = ea.addText(parentEl.x, parentEl.y, label, textOptions);
   let newEl = ea.getElement(newId);
