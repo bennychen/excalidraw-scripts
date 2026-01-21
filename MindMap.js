@@ -2214,9 +2214,9 @@ if (userAction === 'connect') {
     el => el.type !== 'arrow' && el.type !== 'line'
   );
 
-  const selectedTexts = selectedElements.filter(el => el.type === 'text');
+  const selectedTextsOrImages = selectedElements.filter(el => el.type === 'text' || el.type === 'image' || el.type === 'embeddable');
   const elementsForConnect =
-    selectedTexts.length > 0 ? selectedTexts : selectedElements;
+    selectedTextsOrImages.length > 0 ? selectedTextsOrImages : selectedElements;
 
   const selectedIds = new Set(elementsForConnect.map(e => e.id));
 
