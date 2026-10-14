@@ -1625,7 +1625,7 @@ if (
   !hasConnections(selectedElements[0], snapshot)
 ) {
   async function parseBulletedText(rawText) {
-    const lines = rawText.split('\n');
+    const lines = rawText.split(/\r\n?|\n/);
 
     const nodes = [];
     const indentStack = [0];
@@ -2057,7 +2057,8 @@ if (
   }
 
   const textElement = selectedElements[0];
-  let rawText = (textElement.text || '').trim();
+  // Rendered text may contain visual wrapping; preserve the authored line breaks.
+  let rawText = (textElement.originalText ?? textElement.text ?? '').trim();
   if (!rawText) {
     new Notice('The selected text block is empty.');
     return;

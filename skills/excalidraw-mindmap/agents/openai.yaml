@@ -1,0 +1,4 @@
+interface:
+  display_name: "Excalidraw Mindmap"
+  short_description: "Turn paragraphs into tab-indented mindmap text"
+  default_prompt: "Use $excalidraw-mindmap to convert the text below into a tab-indented outline, with English and Simplified Chinese on each line."
